@@ -1,4 +1,4 @@
-# LeakCanary
+# 🐤 LeakCanary
 
 A memory leak detection library for Android.
 
@@ -14,7 +14,7 @@ Add LeakCanary to `build.gradle`:
 
 ```gradle
 dependencies {
-  debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.0-alpha-1'
+  debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.0-alpha-2'
 }
 ```
 
@@ -30,7 +30,7 @@ What's next?
 
 Note: **LeakCanary 2 is in alpha**.
 * Check out the [migration guide](https://github.com/square/leakcanary/wiki/Migrating-to-LeakCanary-2.0).
-* Here is the [change log](https://github.com/square/leakcanary/blob/master/CHANGELOG.md#version-20-alpha-1-2019-04-23).
+* Here is the [change log](https://github.com/square/leakcanary/blob/master/CHANGELOG.md#version-20-alpha-2-2019-05-21).
 * To set up LeakCanary 1.6, go to the [1.6 Readme](https://github.com/square/leakcanary/blob/master/README-1.6.md).
 
 ## Fundamentals
@@ -63,13 +63,23 @@ If you cannot figure out a leak, **please do not file an issue**. Instead, creat
 
 ## Code Recipes
 
-If you think a recipe might be missing or you're not sure that what you're trying to achieve is possible with the current APIs, please [file an issue](https://github.com/square/leakcanary/issues/new). Your feedback help us make LeakCanary better for the entire community.
+If you think a recipe might be missing or you're not sure that what you're trying to achieve is possible with the current APIs, please [file an issue](https://github.com/square/leakcanary/issues/new/choose). Your feedback help us make LeakCanary better for the entire community.
 
 ### Configuring LeakSentry & LeakCanary
 
-LeakCanary is released as two distinct libraries: `com.squareup.leakcanary:leaksentry` and `com.squareup.leakcanary:leakcanary-android` which depends on `leaksentry`.
+LeakCanary is released as two distinct libraries:
 
-LeakSentry is in charge of detecting retained instances. Its configuration can be updated at any time by replacing `LeakSentry.config`:
+* LeakSentry
+  * Detects retained instances.
+  * Suitable for release builds.
+  * Artifact id: `com.squareup.leakcanary:leaksentry`.
+* LeakCanary
+  * Dumps the heap and analyzes it.
+  * Currently only suitable for debug builds.
+  * Depends on LeakSentry.
+  * Artifact id: `com.squareup.leakcanary:leakcanary-android`.
+
+LeakSentry can be configured by replacing `LeakSentry.config`:
 ```kotlin
 class DebugExampleApplication : ExampleApplication() {
 
@@ -80,7 +90,7 @@ class DebugExampleApplication : ExampleApplication() {
 }
 ```
 
-LeakCanary is in charge of dumping the heap and analyzing it. Its configuration can be updated at any time by replacing `LeakCanary.config`:
+LeakCanary can be configured by replacing `LeakCanary.config`:
 
 ```kotlin
 disableLeakCanaryButton.setOnClickListener {
@@ -112,7 +122,7 @@ In your `build.gradle`:
 
 ```gradle
 dependencies {
-  implementation 'com.squareup.leakcanary:leaksentry:2.0-alpha-1'
+  implementation 'com.squareup.leakcanary:leaksentry:2.0-alpha-2'
 }
 ```
 
@@ -137,7 +147,7 @@ android {
     // ...
 
     testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
-    testInstrumentationRunnerArgument "listener", "com.squareup.leakcanary.FailTestOnLeakRunListener"
+    testInstrumentationRunnerArgument "listener", "leakcanary.FailTestOnLeakRunListener"
   }
 }
 ```
@@ -179,17 +189,85 @@ res/
 
 ### Uploading to a server
 
-You can change the default behavior to upload the leak trace and heap dump to a server of your choosing.
+You can change the default behavior to upload the analysis result to a server of your choosing.
 
-**TODO Document this**
+Create a custom `AnalysisResultListener` that delegates to the default: 
 
-### Identifying AOSP leaks as "won't fix"
+```kotlin
+class LeakUploader : AnalysisResultListener {
+  override fun invoke(
+    application: Application,
+    heapAnalysis: HeapAnalysis
+  ) {
+    TODO("Upload heap analysis to server")
 
-**TODO Document this**
+    // Delegate to default behavior (notification and saving result)
+    DefaultAnalysisResultListener(application, heapAnalysis)
+  }
+}
+```
+
+Set `analysisResultListener` on the LeakCanary config:
+
+```kotlin
+class DebugExampleApplication : ExampleApplication() {
+
+  override fun onCreate() {
+    super.onCreate()
+    LeakCanary.config = LeakCanary.config.copy(analysisResultListener = LeakUploader())
+  }
+}
+```
+
+
+### Identifying 3rd party leaks as "won't fix"
+
+Set `exclusionsFactory` on the LeakCanary config to a `ExclusionsFactory` that delegates to the default one and then and add custom exclusions:
+
+```kotlin
+class DebugExampleApplication : ExampleApplication() {
+
+  override fun onCreate() {
+    super.onCreate()
+    LeakCanary.config = LeakCanary.config.copy(exclusionsFactory = { hprofParser ->
+      val defaultFactory = AndroidExcludedRefs.exclusionsFactory(AndroidExcludedRefs.appDefaults)
+      val appDefaults = defaultFactory(hprofParser)
+      val customExclusion = Exclusion(
+          type = StaticFieldExclusion("com.thirdparty.SomeSingleton", "sContext"),
+          status = Exclusion.Status.WONT_FIX_LEAK,
+          reason = "SomeSingleton in library X has a static field leaking a context."
+      )
+      appDefaults + customExclusion
+    })
+  }
+}
+```
 
 ### Identifying leaking instances and labeling instances
 
-**TODO Document this**
+```kotlin
+class DebugExampleApplication : ExampleApplication() {
+
+  override fun onCreate() {
+    super.onCreate()
+    val customLabeler: Labeler = { parser, node ->
+      listOf("Heap dump object id is ${node.instance}")
+    }
+    val labelers = AndroidLabelers.defaultAndroidLabelers(this) + customLabeler
+
+    val customInspector: LeakInspector = { parser, node ->
+      with(parser) {
+        if (node.instance.objectRecord.isInstanceOf("com.example.MySingleton")) {
+          LeakNodeStatus.notLeaking("MySingleton is a singleton")
+        } else LeakNodeStatus.unknown()
+      }
+    }
+    val leakInspectors = AndroidLeakInspectors.defaultAndroidInspectors() + customInspector
+
+    LeakCanary.config = LeakCanary.config.copy(labelers = labelers, leakInspectors = leakInspectors)
+  }
+}
+```
 
 ## FAQ
 
@@ -197,7 +275,7 @@ You can change the default behavior to upload the leak trace and heap dump to a 
 
 Yes. There are a number of known memory leaks that have been fixed over time in AOSP as well as in manufacturer implementations. When such a leak occurs, there is little you can do as an app developer to fix it. For that reason, LeakCanary has a built-in list of known Android leaks to ignore: [AndroidExcludedRefs.kt](https://github.com/square/leakcanary/blob/master/leakcanary-android-core/src/main/java/leakcanary/AndroidExcludedRefs.kt).
 
-If you find a new one, please [create an issue](https://github.com/square/leakcanary/issues/new) and follow these steps:
+If you find a new one, please [create an issue](https://github.com/square/leakcanary/issues/new/choose) and follow these steps:
 
 1. Provide the entire leak trace information (reference key, device, etc), and use backticks (`) for formatting.
 2. Read the AOSP source for that version of Android, and try to figure out why it happens. You can easily navigate through SDK versions [android/platform_frameworks_base](https://github.com/android/platform_frameworks_base).
@@ -235,7 +313,7 @@ Update your dependencies to the latest SNAPSHOT (see [build.gradle](https://gith
 
 ```gradle
  dependencies {
-   debugCompile 'com.squareup.leakcanary:leakcanary-android:2.0-alpha-2-SNAPSHOT'
+   debugCompile 'com.squareup.leakcanary:leakcanary-android:2.0-alpha-3-SNAPSHOT'
  }
 ```
 
