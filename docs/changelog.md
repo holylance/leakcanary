@@ -2,7 +2,7 @@
 
 ## Version 2.0 Alpha 2 (2019-05-21)
 
-**Thanks for testing the alpha**, we're counting on you to help us find bugs and suggest improvements! Check out the new [Getting Started](https://github.com/square/leakcanary#getting-started) instructions and the [migration guide](https://github.com/square/leakcanary/wiki/Migrating-to-LeakCanary-2.0). 
+**Thanks for testing the alpha**, we're counting on you to help us find bugs and suggest improvements! Check out the new [Getting Started](https://square.github.io/leakcanary/getting_started) instructions and the [migration guide](https://square.github.io/leakcanary/Upgrading-to-LeakCanary-2.0). 
 
 * [#1040](https://github.com/square/leakcanary/pull/1040) Import and analyze hprof files from other devices
 * [#1344](https://github.com/square/leakcanary/pull/1344) Computing retained size
@@ -31,27 +31,25 @@ For more details, see the [2.0-alpha-2 Milestone](https://github.com/square/leak
 
 ## Version 2.0 Alpha 1 (2019-04-23)
 
-This change log is also available as a [Twitter thread](https://twitter.com/Piwai/status/1120681920835276800).
-
 <img src="https://github.com/square/leakcanary/wiki/assets/logo-2.0-200px.png" />
 
 * New [logo](https://github.com/square/leakcanary/wiki/FAQ#who-made-the-logo), thanks [@flickator](https://github.com/flickator)!
 * Entirely rewritten to **100% Kotlin**
 * Multiple leaks detected in one analysis
-  * The heap is dumped when the app goes in the background, or when a minimum of 5 leaks is reached in the foreground.
+    * The heap is dumped when the app goes in the background, or when a minimum of 5 leaks is reached in the foreground.
 * Leak grouping
-  * Leaks that share similar causes are grouped in the UI.
-  * New screens to see the list of groups and each group.
-  * Improved leaktrace strings to highlight leak causes.
-  * Leaks can be shared to Stack Overflow
+    * Leaks that share similar causes are grouped in the UI.
+    * New screens to see the list of groups and each group.
+    * Improved leaktrace strings to highlight leak causes.
+    * Leaks can be shared to Stack Overflow
 * New library: **LeakSentry**.
-  * Detects when objects are leaking and triggers LeakCanary
-  * Can be used independently in production, for instance to report the number of leaking instances on an OutOfMemoryError crash.
+    * Detects when objects are leaking and triggers LeakCanary
+    * Can be used independently in production, for instance to report the number of leaking instances on an OutOfMemoryError crash.
 * New heap parser
-  * Uses **90% less memory and 6 times** faster than the prior heap parser.
-  * Runs in the same process as the app on a low priority thread.
-  * No more dependency on Perflib and TroveJ. New dependency on Okio.
-  * The old parser is still available as `leakcanary-android-perflib` but will be removed after alpha.
+    * Uses **90% less memory and 6 times** faster than the prior heap parser.
+    * Runs in the same process as the app on a low priority thread.
+    * No more dependency on Perflib and TroveJ. New dependency on Okio.
+    * The old parser is still available as `leakcanary-android-perflib` but will be removed after alpha.
 * Labelers can add any string content to leak elements
 * 0 code setup, just add the one debug dependency.
 * Simpler configuration options
@@ -189,8 +187,8 @@ For more details, see the [full diff](https://github.com/square/leakcanary/compa
 * New excluded leaks
 * Added `LeakCanary.isInAnalyzerProcess()` to the no-op jar
 * Fixed several file access issues:
-  * No more cleanup on startup, we rotate the heap dump files on every new heap dump.
-  * LeakCanary now falls back to the app directory until it can write to the external storage.
+    * No more cleanup on startup, we rotate the heap dump files on every new heap dump.
+    * LeakCanary now falls back to the app directory until it can write to the external storage.
 * Leak notifications now each use a distinct notification instead of erasing each other.
 * If LeakCanary can't perform a heap dump for any reason (e.g. analysis in progress, debugger attached), it retries later with an exponential backoff.
 * Added confirmation dialog when user deletes all leaks.
