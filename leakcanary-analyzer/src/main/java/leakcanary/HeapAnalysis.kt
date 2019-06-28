@@ -35,11 +35,6 @@ sealed class RetainedInstance : Serializable {
    * enable you to figure out the cause of the leak, if any.
    */
   abstract val referenceKey: String
-}
-
-data class WeakReferenceMissing(override val referenceKey: String) : RetainedInstance()
-
-sealed class WeakReferenceFound : RetainedInstance() {
   /**
    * User defined name to help identify the retained instance.
    */
@@ -49,29 +44,31 @@ sealed class WeakReferenceFound : RetainedInstance() {
    * The class name format is the same as what would be returned by [Class.getName].
    */
   abstract val instanceClassName: String
-  /** Time from the request to watch the reference until the GC was triggered.  */
+  /**
+   * Time from the request to watch the reference until the heap was dumped.
+   */
   abstract val watchDurationMillis: Long
+  /**
+   * Time from when the instance was considered retained until the heap was dumped.
+   */
+  abstract val retainedDurationMillis: Long
 }
-
-data class WeakReferenceCleared(
-  override val referenceKey: String,
-  override val referenceName: String,
-  override val instanceClassName: String,
-  override val watchDurationMillis: Long
-) : WeakReferenceFound()
 
 data class NoPathToInstance(
   override val referenceKey: String,
   override val referenceName: String,
   override val instanceClassName: String,
-  override val watchDurationMillis: Long
-) : WeakReferenceFound()
+  override val watchDurationMillis: Long,
+  override val retainedDurationMillis: Long
+) : RetainedInstance()
 
 data class LeakingInstance(
   override val referenceKey: String,
   override val referenceName: String,
   override val instanceClassName: String,
   override val watchDurationMillis: Long,
+  override val retainedDurationMillis: Long,
+
   /**
    * True if the only path to the leaking reference is through excluded references. Usually, that
    * means you can safely ignore this report.
@@ -87,9 +84,15 @@ data class LeakingInstance(
    */
   val retainedHeapSize: Int?
 
-) : WeakReferenceFound() {
+) : RetainedInstance() {
 
   val groupHash = createGroupHash()
+
+  val instanceClassSimpleName: String
+    get() {
+      val separator = instanceClassName.lastIndexOf('.')
+      return if (separator == -1) instanceClassName else instanceClassName.substring(separator + 1)
+    }
 
   private fun createGroupHash(): String {
     val uniqueString = if (exclusionStatus == WONT_FIX_LEAK) {
