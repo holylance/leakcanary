@@ -33,13 +33,6 @@ object LeakCanary {
     val exclusionsFactory: ExclusionsFactory = exclusionsFactory(
         AndroidExcludedRefs.appDefaults
     ),
-    /**
-     * Whether to compute the total number of bytes in memory that would be reclaimed if the
-     * detected leaks didn't happen. This includes native memory associated to Java objects
-     * (e.g. bitmaps).
-     * Computing the retained heap size can slow down the leak analysis and is off by default.
-     */
-    val computeRetainedHeapSize: Boolean = false,
     val leakInspectors: List<LeakInspector> = AndroidLeakInspectors.defaultAndroidInspectors(),
     val labelers: List<Labeler> = defaultAndroidLabelers(
         InternalLeakCanary.application
@@ -50,7 +43,29 @@ object LeakCanary {
      * If you want leaks to be added to the activity that lists leaks, make sure to delegate
      * calls to [DefaultAnalysisResultListener].
      */
-    val analysisResultListener: AnalysisResultListener = DefaultAnalysisResultListener
+    val analysisResultListener: AnalysisResultListener = DefaultAnalysisResultListener,
+    /**
+     * Whether to compute the total number of bytes in memory that would be reclaimed if the
+     * detected leaks didn't happen. This includes native memory associated to Java objects
+     * (e.g. bitmaps).
+     * Computing the retained heap size can slow down the leak analysis and is off by default.
+     */
+    val computeRetainedHeapSize: Boolean = false,
+
+    /**
+     * How many heap dumps are kept locally. When this threshold is reached LeakCanary starts
+     * deleting the older heap dumps. As several heap dumps may be enqueued you should avoid
+     * going down to 1 or 2.
+     */
+    val maxStoredHeapDumps: Int = 7,
+
+    /**
+     * LeakCanary always attempts to store heap dumps on the external storage first. If the
+     * WRITE_EXTERNAL_STORAGE permission is not granted and [requestWriteExternalStoragePermission]
+     * is true, then LeakCanary will display a notification to ask for that permission.
+     */
+    val requestWriteExternalStoragePermission: Boolean = false
+
   )
 
   @Volatile

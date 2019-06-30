@@ -4,8 +4,8 @@ import android.app.Application
 import com.squareup.leakcanary.core.R
 import leakcanary.Exclusion.Status.WEAKLY_REACHABLE
 import leakcanary.Exclusion.Status.WONT_FIX_LEAK
-import leakcanary.internal.Notifications
 import leakcanary.internal.NotificationType.LEAKCANARY_RESULT
+import leakcanary.internal.Notifications
 import leakcanary.internal.activity.LeakActivity
 import leakcanary.internal.activity.db.HeapAnalysisTable
 import leakcanary.internal.activity.db.LeakingInstanceTable
@@ -14,10 +14,6 @@ import leakcanary.internal.activity.screen.GroupListScreen
 import leakcanary.internal.activity.screen.HeapAnalysisFailureScreen
 import leakcanary.internal.activity.screen.HeapAnalysisListScreen
 import leakcanary.internal.activity.screen.HeapAnalysisSuccessScreen
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 object DefaultAnalysisResultListener : AnalysisResultListener {
   override fun invoke(
@@ -28,16 +24,9 @@ object DefaultAnalysisResultListener : AnalysisResultListener {
     // TODO better log that include leakcanary version, exclusions, etc.
     CanaryLog.d("%s", heapAnalysis)
 
-    val movedHeapDump = renameHeapdump(heapAnalysis.heapDumpFile)
-
-    val updatedHeapAnalysis = when (heapAnalysis) {
-      is HeapAnalysisFailure -> heapAnalysis.copy(heapDumpFile = movedHeapDump)
-      is HeapAnalysisSuccess -> heapAnalysis.copy(heapDumpFile = movedHeapDump)
-    }
-
     val (id, groupProjections) = LeaksDbHelper(application)
         .writableDatabase.use { db ->
-      val id = HeapAnalysisTable.insert(db, updatedHeapAnalysis)
+      val id = HeapAnalysisTable.insert(db, heapAnalysis)
       id to LeakingInstanceTable.retrieveAllByHeapAnalysisId(db, id)
     }
 
@@ -80,18 +69,5 @@ object DefaultAnalysisResultListener : AnalysisResultListener {
         R.id.leak_canary_notification_analysis_result,
         LEAKCANARY_RESULT
     )
-  }
-
-  private fun renameHeapdump(heapDumpFile: File): File {
-    val fileName = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss_SSS'.hprof'", Locale.US).format(Date())
-
-    val newFile = File(heapDumpFile.parent, fileName)
-    val renamed = heapDumpFile.renameTo(newFile)
-    if (!renamed) {
-      CanaryLog.d(
-          "Could not rename heap dump file %s to %s", heapDumpFile.path, newFile.path
-      )
-    }
-    return newFile
   }
 }
