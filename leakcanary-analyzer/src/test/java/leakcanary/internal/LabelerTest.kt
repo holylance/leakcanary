@@ -1,12 +1,12 @@
 package leakcanary.internal
 
+import leakcanary.AndroidLeakTraceInspectors
 import leakcanary.HeapAnalysisSuccess
-import leakcanary.HprofParser
-import leakcanary.InstanceDefaultLabeler
-import leakcanary.LeakNode
-import leakcanary.LeakTraceElement.Type.LOCAL
+import leakcanary.HprofGraph
+import leakcanary.LeakTraceElementReporter
+import leakcanary.LeakTraceInspector
 import leakcanary.LeakingInstance
-import leakcanary.ObjectIdMetadata.STRING
+import leakcanary.forEachInstanceOf
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.Before
 import org.junit.Rule
@@ -28,16 +28,18 @@ class LabelerTest {
   @Test fun stringContentAsLabel() {
     hprofFile.writeSinglePathToString("World")
 
-    val labeler = { parser: HprofParser,
-      node: LeakNode
-      ->
-      if (parser.objectIdMetadata(node.instance) == STRING) {
-        listOf("Hello ${parser.retrieveStringById(node.instance)}")
-      } else emptyList()
-
+    val labeler = object : LeakTraceInspector{
+      override fun inspect(
+        graph: HprofGraph,
+        leakTrace: List<LeakTraceElementReporter>
+      ) {
+        leakTrace.forEachInstanceOf("java.lang.String")  { instance ->
+          addLabel("Hello ${instance.readAsJavaString()}")
+        }
+      }
     }
 
-    val analysis = hprofFile.checkForLeaks<HeapAnalysisSuccess>(labelers = listOf(labeler))
+    val analysis = hprofFile.checkForLeaks<HeapAnalysisSuccess>(leakTraceInspectors = listOf(labeler))
 
     val leak = analysis.retainedInstances[0] as LeakingInstance
 
@@ -48,7 +50,7 @@ class LabelerTest {
     hprofFile.writeJavaLocalLeak(threadClass = "MyThread", threadName = "kroutine")
 
     val analysis =
-      hprofFile.checkForLeaks<HeapAnalysisSuccess>(labelers = listOf(InstanceDefaultLabeler))
+      hprofFile.checkForLeaks<HeapAnalysisSuccess>(leakTraceInspectors = listOf(AndroidLeakTraceInspectors.THREAD))
 
     val leak = analysis.retainedInstances[0] as LeakingInstance
 

@@ -2,9 +2,7 @@ package leakcanary
 
 import android.app.Application
 import android.content.Intent
-import leakcanary.AndroidExcludedRefs.Companion.exclusionsFactory
 import leakcanary.internal.InternalLeakCanary
-import java.util.ArrayList
 
 typealias AnalysisResultListener = (Application, HeapAnalysis) -> Unit
 
@@ -30,13 +28,11 @@ object LeakCanary {
      * bothering developers as much but it could miss some leaks.
      */
     val retainedVisibleThreshold: Int = 5,
-    val exclusionsFactory: ExclusionsFactory = exclusionsFactory(
-        AndroidExcludedRefs.appDefaults
-    ),
-    val leakInspectors: List<LeakInspector> = AndroidLeakInspectors.defaultAndroidInspectors(),
-    val labelers: List<Labeler> = defaultAndroidLabelers(
-        InternalLeakCanary.application
-    ),
+
+    val knownReferences: Set<AndroidKnownReference> = AndroidKnownReference.appDefaults,
+
+    val leakTraceInspectors: List<LeakTraceInspector> = AndroidLeakTraceInspectors.defaultInspectors(),
+
     /**
      * Called with the heap analysis result from a background thread.
      * The heap dump file will be removed immediately after this function is invoked.
@@ -74,16 +70,4 @@ object LeakCanary {
   /** [Intent] that can be used to programmatically launch the leak display activity. */
   val leakDisplayActivityIntent
     get() = InternalLeakCanary.leakDisplayActivityIntent
-
-  fun defaultAndroidLabelers(application: Application): List<Labeler> {
-    val labelers = ArrayList<Labeler>()
-    labelers.add(InstanceDefaultLabeler)
-    labelers.add(
-        ViewLabeler(
-            application
-        )
-    )
-    labelers.addAll(AndroidLabelers.values())
-    return labelers
-  }
 }
