@@ -138,17 +138,12 @@ The chain of references from the GC root to the leaking instance is what is prev
 ```
     ├─ android.widget.TextView
     │    Leaking: YES (View detached and has parent)
-```
-
-LeakCanary runs heuristics to determine the lifecycle state of the nodes of the leak trace, and therefore whether they are leaking or not. For example, if a view has `View#mAttachInfo = null` and `mParent != null` then it is detached yet has a parent, so that view is probably leaking. In the leak trace, for each node you'll see `Leaking: YES / NO / UNKNOWN` with an explanation in parenthesis. You can customize this behavior and add your own heuristics.
-
-```
     │    View#mAttachInfo is null (view detached)
     │    View#mParent is set
     │    View.mWindowAttachCount=1
 ```
 
-LeakCanary can also surface extra information about the state of a node, e.g. `View.mWindowAttachCount=1`. You can add your own labels.
+LeakCanary runs heuristics to determine the lifecycle state of the nodes of the leak trace, and therefore whether they are leaking or not. For example, if a view has `View#mAttachInfo = null` and `mParent != null` then it is detached yet has a parent, so that view is probably leaking. In the leak trace, for each node you'll see `Leaking: YES / NO / UNKNOWN` with an explanation in parenthesis. LeakCanary can also surface extra information about the state of a node, e.g. `View.mWindowAttachCount=1`. You can customize this behavior and add your own heuristics by updating `LeakCanary.Config.leakTraceInspectors`.
 
 ### Narrowing down the cause of a leak
 
@@ -223,8 +218,8 @@ LeakCanary is released as several distinct libraries:
     * Depends on LeakSentry.
     * Artifact id: `com.squareup.leakcanary:leakcanary-android`.
 * LeakCanary for Instrumentation tests
-    * Fails tests if a leak is detected
-    * Only suitable for Instrumentation tests
+    * Fails tests if a leak is detected.
+    * Only suitable for Instrumentation tests.
     * Configures LeakCanary to wait for the end of tests before dumping the heap.
     * Artifact id: `com.squareup.leakcanary:leakcanary-android-instrumentation`.
-    * See [Running LeakCanary in instrumentation tests](recipes.md#running-leakcanary-in-instrumentation-tests)
+    * See [Running LeakCanary in instrumentation tests](recipes.md#running-leakcanary-in-instrumentation-tests).
