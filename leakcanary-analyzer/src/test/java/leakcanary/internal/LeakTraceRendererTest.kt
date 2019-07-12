@@ -4,10 +4,10 @@ import leakcanary.Exclusion
 import leakcanary.Exclusion.ExclusionType.InstanceFieldExclusion
 import leakcanary.HeapAnalysisSuccess
 import leakcanary.HprofGraph
-import leakcanary.LeakTraceElementReporter
-import leakcanary.LeakTraceInspector
+import leakcanary.ObjectReporter
 import leakcanary.LeakingInstance
-import leakcanary.forEachInstanceOf
+import leakcanary.ObjectInspector
+import leakcanary.asInstance
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.Before
 import org.junit.Rule
@@ -38,7 +38,8 @@ class LeakTraceRendererTest {
     analysis renders """
     ┬
     ├─ GcRoot
-    │    Leaking: NO (it's a GC root)
+    │    Leaking: NO (a system class never leaks)
+    │    GC Root: System class
     │    ↓ static GcRoot.leak
     │                    ~~~~
     ╰→ Leaking
@@ -59,12 +60,12 @@ class LeakTraceRendererTest {
 
     val analysis =
       hprofFile.checkForLeaks<HeapAnalysisSuccess>(
-          leakTraceInspectors = listOf(object : LeakTraceInspector {
+          objectInspectors = listOf(object : ObjectInspector {
             override fun inspect(
               graph: HprofGraph,
-              leakTrace: List<LeakTraceElementReporter>
+              reporter: ObjectReporter
             ) {
-              leakTrace.forEachInstanceOf("ClassB") {
+              reporter.asInstance("ClassB") {
                 reportLeaking("because reasons")
               }
             }
@@ -74,7 +75,8 @@ class LeakTraceRendererTest {
     analysis renders """
     ┬
     ├─ GcRoot
-    │    Leaking: NO (it's a GC root)
+    │    Leaking: NO (a system class never leaks)
+    │    GC Root: System class
     │    ↓ static GcRoot.instanceA
     │                    ~~~~~~~~~
     ├─ ClassA
@@ -85,7 +87,7 @@ class LeakTraceRendererTest {
     │    Leaking: YES (because reasons)
     │    ↓ ClassB.leak
     ╰→ Leaking
-    ​     Leaking: YES (RefWatcher was watching this)
+    ​     Leaking: YES (ClassB↑ is leaking and RefWatcher was watching this)
     """
   }
 
@@ -97,14 +99,12 @@ class LeakTraceRendererTest {
     }
 
     val analysis = hprofFile.checkForLeaks<HeapAnalysisSuccess>(
-        leakTraceInspectors = listOf(object : LeakTraceInspector {
+        objectInspectors = listOf(object : ObjectInspector {
           override fun inspect(
             graph: HprofGraph,
-            leakTrace: List<LeakTraceElementReporter>
+            reporter: ObjectReporter
           ) {
-            leakTrace.forEach { reporter ->
-              reporter.addLabel("¯\\_(ツ)_/¯")
-            }
+            reporter.addLabel("¯\\_(ツ)_/¯")
           }
 
         })
@@ -113,8 +113,9 @@ class LeakTraceRendererTest {
     analysis renders """
     ┬
     ├─ GcRoot
-    │    Leaking: NO (it's a GC root)
+    │    Leaking: NO (a system class never leaks)
     │    ¯\_(ツ)_/¯
+    │    GC Root: System class
     │    ↓ static GcRoot.leak
     │                    ~~~~
     ╰→ Leaking
@@ -140,7 +141,8 @@ class LeakTraceRendererTest {
     analysis renders """
     ┬
     ├─ GcRoot
-    │    Leaking: NO (it's a GC root)
+    │    Leaking: NO (a system class never leaks)
+    │    GC Root: System class
     │    ↓ static GcRoot.instanceA
     │                    ~~~~~~~~~
     ├─ ClassA
@@ -166,7 +168,8 @@ class LeakTraceRendererTest {
     analysis renders """
     ┬
     ├─ GcRoot
-    │    Leaking: NO (it's a GC root)
+    │    Leaking: NO (a system class never leaks)
+    │    GC Root: System class
     │    ↓ static GcRoot.array
     │                    ~~~~~
     ├─ java.lang.Object[]
@@ -187,7 +190,8 @@ class LeakTraceRendererTest {
     analysis renders """
     ┬
     ├─ MyThread
-    │    Leaking: NO (it's a GC root)
+    │    Leaking: UNKNOWN
+    │    GC Root: Java local variable
     │    ↓ thread MyThread.<Java Local>
     │                      ~~~~~~~~~~~~
     ╰→ Leaking

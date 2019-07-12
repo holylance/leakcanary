@@ -7,9 +7,10 @@ import leakcanary.Exclusion.ExclusionType.JavaLocalExclusion
 import leakcanary.Exclusion.Status.NEVER_REACHABLE
 import leakcanary.Exclusion.Status.WEAKLY_REACHABLE
 import leakcanary.HeapAnalysis
+import leakcanary.HeapAnalysisFailure
 import leakcanary.HeapAnalyzer
 import leakcanary.KeyedWeakReference
-import leakcanary.LeakTraceInspector
+import leakcanary.ObjectInspector
 import java.io.File
 import java.lang.ref.PhantomReference
 import java.lang.ref.SoftReference
@@ -17,14 +18,18 @@ import java.lang.ref.WeakReference
 
 @Suppress("UNCHECKED_CAST")
 fun <T : HeapAnalysis> File.checkForLeaks(
-  leakTraceInspectors: List<LeakTraceInspector> = emptyList(),
+  objectInspectors: List<ObjectInspector> = emptyList(),
   computeRetainedHeapSize: Boolean = false,
   exclusions: List<Exclusion> = defaultExclusionsFactory
 ): T {
   val heapAnalyzer = HeapAnalyzer(AnalyzerProgressListener.NONE)
-  return heapAnalyzer.checkForLeaks(
-      this, exclusions, computeRetainedHeapSize, leakTraceInspectors
-  ) as T
+  val result = heapAnalyzer.checkForLeaks(
+      this, exclusions, computeRetainedHeapSize, objectInspectors
+  )
+  if (result is HeapAnalysisFailure) {
+    println(result)
+  }
+  return result as T
 }
 
 val defaultExclusionsFactory: List<Exclusion> =
