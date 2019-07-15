@@ -16,6 +16,7 @@
 package leakcanary.internal
 
 import android.content.Context
+import android.text.Html
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.format.DateUtils
@@ -23,9 +24,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.TextView
-import androidx.annotation.ColorRes
-import androidx.core.content.ContextCompat
-import androidx.core.text.HtmlCompat
 import com.squareup.leakcanary.core.R
 import leakcanary.LeakNodeStatus.LEAKING
 import leakcanary.LeakNodeStatus.NOT_LEAKING
@@ -50,11 +48,13 @@ import leakcanary.internal.MoreDetailsView.Details.NONE
 import leakcanary.internal.MoreDetailsView.Details.OPENED
 import leakcanary.internal.activity.db.LeakingInstanceTable.InstanceProjection
 import leakcanary.internal.navigation.inflate
+import android.os.Build.VERSION.SDK_INT
+import leakcanary.internal.navigation.getColorCompat
 
-internal class DisplayLeakAdapter private constructor(
+@Suppress("DEPRECATION")
+internal class DisplayLeakAdapter constructor(
   context: Context,
   private val leakTrace: LeakTrace,
-  private val referenceName: String,
   private val instanceProjections: List<InstanceProjection>
 ) : BaseAdapter() {
 
@@ -62,15 +62,8 @@ internal class DisplayLeakAdapter private constructor(
 
   constructor(
     context: Context,
-    leakTrace: LeakTrace,
-    referenceName: String
-  ) : this(context, leakTrace, referenceName, emptyList())
-
-  constructor(
-    context: Context,
-    leakTrace: LeakTrace,
-    instanceProjections: List<InstanceProjection>
-  ) : this(context, leakTrace, "", instanceProjections)
+    leakTrace: LeakTrace
+  ) : this(context, leakTrace, emptyList())
 
   private val opened = BooleanArray(TOP_ROW_COUNT + leakTrace.elements.size)
 
@@ -147,27 +140,23 @@ internal class DisplayLeakAdapter private constructor(
     val resources = view.resources
     if (isFirstConnectorRow(position)) {
       titleView.text = if (isLeakGroup) {
-        HtmlCompat.fromHtml(
+        Html.fromHtml(
             """
               <font color='$helpColorHexString'>
                 <b>Known likely causes of leak group</b>
               </font>
-            """,
-            HtmlCompat.FROM_HTML_MODE_LEGACY
+            """
         )
       } else {
-        HtmlCompat.fromHtml(
+        Html.fromHtml(
             """
               <font color='$helpColorHexString'>
                 <b>${resources.getString(R.string.leak_canary_help_title)}</b>
               </font>
-            """,
-            HtmlCompat.FROM_HTML_MODE_LEGACY
+            """
         )
       }
     } else {
-      val isLast = position == (TOP_ROW_COUNT + leakTrace.elements.size) - 1
-
       val elementIndex = elementIndex(position)
       val element = leakTrace.elements[elementIndex]
 
@@ -180,7 +169,7 @@ internal class DisplayLeakAdapter private constructor(
       titleView.text = htmlTitle
 
       if (opened[position]) {
-        val htmlDetail = htmlDetails(isLast, element)
+        val htmlDetail = htmlDetails(element)
         detailView.text = htmlDetail
       }
     }
@@ -257,8 +246,7 @@ internal class DisplayLeakAdapter private constructor(
     if (exclusion != null) {
       htmlString += " (excluded)"
     }
-    val builder =
-      HtmlCompat.fromHtml(htmlString, HtmlCompat.FROM_HTML_MODE_LEGACY) as SpannableStringBuilder
+    val builder = Html.fromHtml(htmlString) as SpannableStringBuilder
     if (maybeLeakCause) {
       SquigglySpan.replaceUnderlineSpans(builder, context)
     }
@@ -266,10 +254,7 @@ internal class DisplayLeakAdapter private constructor(
     return builder
   }
 
-  private fun htmlDetails(
-    isLeakingInstance: Boolean,
-    element: LeakTraceElement
-  ): Spanned {
+  private fun htmlDetails(element: LeakTraceElement): Spanned {
     var htmlString = ""
     val exclusion = element.exclusion
     if (exclusion != null) {
@@ -279,11 +264,7 @@ internal class DisplayLeakAdapter private constructor(
         htmlString += " because <font color='#f3cf83'>" + exclusion.reason + "</font>"
       }
     }
-    if (isLeakingInstance && referenceName != "") {
-      htmlString += " <font color='$extraColorHexString'>$referenceName</font>"
-    }
-
-    return HtmlCompat.fromHtml(htmlString, HtmlCompat.FROM_HTML_MODE_LEGACY)
+    return Html.fromHtml(htmlString)
   }
 
   private fun getConnectorType(position: Int): Type {
@@ -365,8 +346,8 @@ internal class DisplayLeakAdapter private constructor(
     private const val TOP_ROW_COUNT = 2
 
     // https://stackoverflow.com/a/6540378/703646
-    private fun hexStringColor(context: Context, @ColorRes colorResId: Int): String {
-      return String.format("#%06X", 0xFFFFFF and ContextCompat.getColor(context, colorResId))
+    private fun hexStringColor(context: Context, colorResId: Int): String {
+      return String.format("#%06X", 0xFFFFFF and context.getColorCompat(colorResId))
     }
   }
 }

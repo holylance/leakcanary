@@ -17,11 +17,12 @@ package leakcanary.internal
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build.VERSION.SDK_INT
 import android.os.Process
-import androidx.core.content.ContextCompat
 import com.squareup.leakcanary.core.R
 import leakcanary.AnalyzerProgressListener
 import leakcanary.AndroidKnownReference
+import leakcanary.AndroidObjectInspectors
 import leakcanary.CanaryLog
 import leakcanary.HeapAnalyzer
 import leakcanary.LeakCanary
@@ -60,7 +61,10 @@ internal class HeapAnalyzerService : ForegroundService(
 
     val heapAnalysis =
       heapAnalyzer.checkForLeaks(
-          heapDumpFile, exclusions, config.computeRetainedHeapSize, config.objectInspectors
+          heapDumpFile, exclusions, config.computeRetainedHeapSize, config.objectInspectors,
+          if (config.useExperimentalLeakFinders) config.objectInspectors else listOf(
+              AndroidObjectInspectors.KEYED_WEAK_REFERENCE
+          )
       )
 
     config.analysisResultListener(application, heapAnalysis)
@@ -84,7 +88,19 @@ internal class HeapAnalyzerService : ForegroundService(
     ) {
       val intent = Intent(context, HeapAnalyzerService::class.java)
       intent.putExtra(HEAPDUMP_FILE_EXTRA, heapDumpFile)
-      ContextCompat.startForegroundService(context, intent)
+      startForegroundService(context, intent)
+    }
+
+    fun startForegroundService(
+      context: Context,
+      intent: Intent
+    ) {
+      if (SDK_INT >= 26) {
+        context.startForegroundService(intent)
+      } else {
+        // Pre-O behavior.
+        context.startService(intent)
+      }
     }
   }
 }
