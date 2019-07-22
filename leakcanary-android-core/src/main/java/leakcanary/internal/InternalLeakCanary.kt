@@ -17,10 +17,13 @@ import leakcanary.GcTrigger
 import leakcanary.LeakCanary
 import leakcanary.LeakCanary.Config
 import leakcanary.LeakSentry
+import leakcanary.OnObjectRetainedListener
 import leakcanary.internal.activity.LeakActivity
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicReference
 
-internal object InternalLeakCanary : LeakSentryListener {
+internal object InternalLeakCanary : (Application) -> Unit, OnObjectRetainedListener {
 
   private const val DYNAMIC_SHORTCUT_ID = "com.squareup.leakcanary.dynamic_shortcut"
 
@@ -44,10 +47,10 @@ internal object InternalLeakCanary : LeakSentryListener {
 
   val noInstallConfig: Config
     get() = Config(
-        dumpHeap = false, knownReferences = emptySet(), objectInspectors = emptyList()
+        dumpHeap = false, referenceMatchers = emptyList(), objectInspectors = emptyList()
     )
 
-  override fun onLeakSentryInstalled(application: Application) {
+  override fun invoke(application: Application) {
     this.application = application
 
     val heapDumper = AndroidHeapDumper(application, leakDirectoryProvider)
@@ -61,7 +64,7 @@ internal object InternalLeakCanary : LeakSentryListener {
     val backgroundHandler = Handler(handlerThread.looper)
 
     heapDumpTrigger = HeapDumpTrigger(
-        application, backgroundHandler, LeakSentry.refWatcher, gcTrigger, heapDumper, configProvider
+        application, backgroundHandler, LeakSentry.objectWatcher, gcTrigger, heapDumper, configProvider
     )
     application.registerVisibilityListener { applicationVisible ->
       this.applicationVisible = applicationVisible
@@ -205,9 +208,9 @@ internal object InternalLeakCanary : LeakSentryListener {
     }
   }
 
-  override fun onReferenceRetained() {
+  override fun onObjectRetained() {
     if (this::heapDumpTrigger.isInitialized) {
-      heapDumpTrigger.onReferenceRetained()
+      heapDumpTrigger.onObjectRetained()
     }
   }
 
@@ -215,6 +218,16 @@ internal object InternalLeakCanary : LeakSentryListener {
     if (this::heapDumpTrigger.isInitialized) {
       heapDumpTrigger.onDumpHeapReceived()
     }
+  }
+
+  inline fun <reified T : Any> noOpDelegate(): T {
+    val javaClass = T::class.java
+    val noOpHandler = InvocationHandler { _, _, _ ->
+      // no op
+    }
+    return Proxy.newProxyInstance(
+        javaClass.classLoader, arrayOf(javaClass), noOpHandler
+    ) as T
   }
 
   private const val LEAK_CANARY_THREAD_NAME = "LeakCanary-Heap-Dump"

@@ -11,7 +11,7 @@ import leakcanary.LeakTraceElement.Holder.THREAD
 import leakcanary.LeakTraceElement.Type.STATIC_FIELD
 import java.util.Locale
 
-fun LeakTrace.renderToString(): String {
+internal fun LeakTrace.renderToString(): String {
   var result = "┬"
 
   elements.forEachIndexed { index, element ->
@@ -31,10 +31,6 @@ fun LeakTrace.renderToString(): String {
 
     val currentReachability = elements[index].leakStatusAndReason
     result += "\n" + contentPrefix + "Leaking: " + currentReachability.renderToString()
-
-    if (element.exclusion != null) {
-      result += "\n" + contentPrefix + "Matches exclusion ${element.exclusion.matching}"
-    }
 
     for (label in element.labels) {
       result += "\n" + contentPrefix + label

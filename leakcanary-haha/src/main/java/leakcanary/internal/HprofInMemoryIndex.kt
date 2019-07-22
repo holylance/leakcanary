@@ -1,6 +1,15 @@
 package leakcanary.internal
 
+import leakcanary.GcRoot
+import leakcanary.GcRoot.JavaFrame
 import leakcanary.GcRoot.JniGlobal
+import leakcanary.GcRoot.JniLocal
+import leakcanary.GcRoot.JniMonitor
+import leakcanary.GcRoot.MonitorUsed
+import leakcanary.GcRoot.NativeStack
+import leakcanary.GcRoot.StickyClass
+import leakcanary.GcRoot.ThreadBlock
+import leakcanary.GcRoot.ThreadObject
 import leakcanary.HprofPushRecordsParser.OnRecordListener
 import leakcanary.HprofReader
 import leakcanary.PrimitiveType
@@ -19,8 +28,6 @@ import leakcanary.Record.HeapDumpRecord.ObjectRecord.PrimitiveArrayDumpRecord.In
 import leakcanary.Record.HeapDumpRecord.ObjectRecord.PrimitiveArrayDumpRecord.LongArrayDump
 import leakcanary.Record.HeapDumpRecord.ObjectRecord.PrimitiveArrayDumpRecord.ShortArrayDump
 import leakcanary.Record.LoadClassRecord
-import leakcanary.Record.StackFrameRecord
-import leakcanary.Record.StackTraceRecord
 import leakcanary.Record.StringRecord
 import leakcanary.internal.IndexedObject.IndexedClass
 import leakcanary.internal.IndexedObject.IndexedInstance
@@ -35,6 +42,7 @@ internal class HprofInMemoryIndex private constructor(
   private val hprofStringCache: LongToStringSparseArray,
   private val classNames: LongToLongSparseArray,
   private val objectIndex: LongToObjectSparseArray<IndexedObject>,
+  private val gcRoots: List<GcRoot>,
   private val typeSizes: Map<Int, Int>,
   val primitiveWrapperTypes: Set<Long>
 ) {
@@ -74,15 +82,23 @@ internal class HprofInMemoryIndex private constructor(
     return objectIndex.entrySequence()
   }
 
+  fun gcRoots(): List<GcRoot> {
+    return gcRoots
+  }
+
   fun indexedObject(objectId: Long): IndexedObject {
-    return objectIndex[objectId]!!
+    return objectIndex[objectId] ?: throw IllegalArgumentException(
+        "Object id $objectId not found in heap dump."
+    )
   }
 
   fun objectIdIsIndexed(objectId: Long): Boolean {
     return objectIndex[objectId] != null
   }
 
-  class Builder : OnRecordListener {
+  class Builder(
+    private val indexedGcRootsTypes: Set<KClass<out GcRoot>>
+  ) : OnRecordListener {
     /**
      * Map of string id to string
      * This currently keeps all the hprof strings that we could care about: class names,
@@ -115,6 +131,8 @@ internal class HprofInMemoryIndex private constructor(
      */
     private val primitiveWrapperClassNames = mutableSetOf<Long>()
 
+    private val gcRoots = mutableListOf<GcRoot>()
+
     private lateinit var typeSizes: Map<Int, Int>
     private var consumed = false
 
@@ -124,7 +142,8 @@ internal class HprofInMemoryIndex private constructor(
         ClassDumpRecord::class,
         InstanceDumpRecord::class,
         ObjectArrayDumpRecord::class,
-        PrimitiveArrayDumpRecord::class
+        PrimitiveArrayDumpRecord::class,
+        GcRootRecord::class
     )
 
     override fun onTypeSizesAvailable(typeSizes: Map<Int, Int>) {
@@ -143,7 +162,8 @@ internal class HprofInMemoryIndex private constructor(
           if (PRIMITIVE_WRAPPER_TYPES.contains(record.string)) {
             primitiveWrapperClassNames.add(record.id)
           }
-          hprofStringCache[record.id] = record.string
+          // JVM heap dumps use "/" for package separators (vs "." for Android heap dumps)
+          hprofStringCache[record.id] = record.string.replace('/', '.')
         }
         is LoadClassRecord -> {
           classNames[record.id] = record.classNameStringId
@@ -151,12 +171,17 @@ internal class HprofInMemoryIndex private constructor(
             primitiveWrapperTypes.add(record.id)
           }
         }
+        is GcRootRecord -> {
+          val gcRoot = record.gcRoot
+          if (gcRoot.id != 0L && gcRoot::class in indexedGcRootsTypes) {
+            gcRoots += gcRoot
+          }
+        }
         is ClassDumpRecord -> {
           objectIndex[record.id] = IndexedClass(position, record.superClassId, record.instanceSize)
         }
         is InstanceDumpRecord -> {
-          objectIndex[record.id] =
-            IndexedInstance(position, record.classId)
+          objectIndex[record.id] = IndexedInstance(position, record.classId)
         }
         is ObjectArrayDumpRecord -> {
           objectIndex[record.id] = IndexedObjectArray(position, record.arrayClassId)
@@ -181,7 +206,7 @@ internal class HprofInMemoryIndex private constructor(
       consumed = true
       // Passing references to avoid copying the underlying data structures.
       return HprofInMemoryIndex(
-          hprofStringCache, classNames, objectIndex,
+          hprofStringCache, classNames, objectIndex, gcRoots,
           typeSizes,
           primitiveWrapperTypes
       )
@@ -197,8 +222,36 @@ internal class HprofInMemoryIndex private constructor(
         Int::class.java.name, Long::class.java.name
     )
 
-    fun createOnRecordListener(): Builder {
-      return Builder()
+    fun createOnRecordListener(
+      indexedGcRootTypes: Set<KClass<out GcRoot>> = setOf(
+          JniGlobal::class,
+          JavaFrame::class,
+          JniLocal::class,
+          MonitorUsed::class,
+          NativeStack::class,
+          StickyClass::class,
+          ThreadBlock::class,
+          // ThreadObject points to threads, which we need to find the thread that a JavaLocalPattern
+          // belongs to
+          ThreadObject::class,
+          JniMonitor::class
+          /*
+          Not included here:
+
+          VmInternal: Ignoring because we've got 150K of it, but is this the right thing
+          to do? What's VmInternal exactly? History does not go further than
+          https://android.googlesource.com/platform/dalvik2/+/refs/heads/master/hit/src/com/android/hit/HprofParser.java#77
+          We should log to figure out what objects VmInternal points to.
+
+          ReferenceCleanup: We used to keep it, but the name doesn't seem like it should create a leak.
+
+          Unknown: it's unknown, should we care?
+
+          We definitely don't care about those for leak finding: InternedString, Finalizing, Debugger, Unreachable
+           */
+      )
+    ): Builder {
+      return Builder(indexedGcRootTypes)
     }
 
   }

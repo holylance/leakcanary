@@ -17,103 +17,91 @@ package leakcanary.internal
 
 import leakcanary.AnalyzerProgressListener
 import leakcanary.AnalyzerProgressListener.Step.FINDING_DOMINATORS
-import leakcanary.AnalyzerProgressListener.Step.FINDING_SHORTEST_PATHS
+import leakcanary.AnalyzerProgressListener.Step.FINDING_PATHS_TO_LEAKING_INSTANCES
 import leakcanary.CanaryLog
-import leakcanary.Exclusion
-import leakcanary.Exclusion.ExclusionType
-import leakcanary.Exclusion.ExclusionType.InstanceFieldExclusion
-import leakcanary.Exclusion.ExclusionType.StaticFieldExclusion
-import leakcanary.Exclusion.Status
-import leakcanary.Exclusion.Status.NEVER_REACHABLE
-import leakcanary.Exclusion.Status.WEAKLY_REACHABLE
 import leakcanary.GcRoot
 import leakcanary.GcRoot.JavaFrame
 import leakcanary.GcRoot.ThreadObject
+import leakcanary.GraphObjectRecord
 import leakcanary.GraphObjectRecord.GraphClassRecord
 import leakcanary.GraphObjectRecord.GraphInstanceRecord
 import leakcanary.GraphObjectRecord.GraphObjectArrayRecord
 import leakcanary.GraphObjectRecord.GraphPrimitiveArrayRecord
+import leakcanary.HeapValue
 import leakcanary.HprofGraph
 import leakcanary.HprofReader
-import leakcanary.LeakNode
-import leakcanary.LeakNode.ChildNode
-import leakcanary.LeakNode.RootNode
 import leakcanary.LeakReference
 import leakcanary.LeakTraceElement.Type.ARRAY_ENTRY
 import leakcanary.LeakTraceElement.Type.INSTANCE_FIELD
 import leakcanary.LeakTraceElement.Type.LOCAL
 import leakcanary.LeakTraceElement.Type.STATIC_FIELD
 import leakcanary.Record.HeapDumpRecord.ObjectRecord.ObjectArrayDumpRecord
+import leakcanary.ReferenceMatcher
+import leakcanary.ReferenceMatcher.IgnoredReferenceMatcher
+import leakcanary.ReferenceMatcher.LibraryLeakReferenceMatcher
+import leakcanary.internal.ReferencePathNode.ChildNode.LibraryLeakNode
+import leakcanary.internal.ReferencePathNode.ChildNode.NormalNode
+import leakcanary.internal.ReferencePathNode.RootNode
+import leakcanary.ReferencePattern
+import leakcanary.ReferencePattern.InstanceFieldPattern
+import leakcanary.ReferencePattern.StaticFieldPattern
 import leakcanary.internal.hppc.LongLongScatterMap
 import leakcanary.internal.hppc.LongScatterSet
+import java.util.ArrayDeque
+import java.util.Deque
 import java.util.LinkedHashMap
-import java.util.PriorityQueue
 
 /**
  * Not thread safe.
  *
- * Finds the shortest path from leaking references to a gc root, ignoring excluded
- * refs first and then including the ones that are not "always ignorable" as needed if no path is
+ * Finds the shortest path from leaking references to a gc root, first ignoring references
+ * identified as "to visit last" and then visiting them as needed if no path is
  * found.
- *
- * Skips enqueuing strings as an optimization, so if the leaking reference is a string then it will
- * never be found.
  */
 internal class ShortestPathFinder {
 
-  /**
-   * A segmented FIFO queue. The queue is segmented by [Status]. Within each segment the elements
-   * are ordered FIFO.
-   */
-  private val toVisitQueue = PriorityQueue<LeakNode>(1024, Comparator { node1, node2 ->
-    val priorityComparison = toVisitMap[node1.instance]!!.compareTo(toVisitMap[node2.instance]!!)
-    if (priorityComparison != 0) {
-      priorityComparison
-    } else {
-      node1.visitOrder.compareTo(node2.visitOrder)
-    }
-  })
   /** Set of instances to visit */
-  private val toVisitMap = LinkedHashMap<Long, Status>()
+  private val toVisitQueue: Deque<ReferencePathNode> = ArrayDeque()
+  private val toVisitLastQueue: Deque<LibraryLeakNode> = ArrayDeque()
+  /**
+   * Enables fast checking of whether a node is already in the queue.
+   */
+  private val toVisitSet = HashSet<Long>()
+  private val toVisitLastSet = HashSet<Long>()
+
   private val visitedSet = LongScatterSet()
   private lateinit var leakingInstanceObjectIds: Set<Long>
-  private var visitOrder = 0
 
   /**
    * Map of instances to their leaking dominator.
    * var because the instance will be returned by [findPaths] and replaced with a new empty map
    * here (copying it could be expensive).
    *
-   * If an instance has been added to [toVisitMap] or [visitedSet] and is missing from
+   * If an instance has been added to [toVisitSet] or [visitedSet] and is missing from
    * [dominatedInstances] then it's considered "undomitable" ie it is dominated by gc roots
    * and cannot be dominated by a leaking instance.
    */
   private var dominatedInstances = LongLongScatterMap()
   private var sizeOfObjectInstances = 0
 
-  class Result(
-    val leakingNode: LeakNode,
-    val exclusionStatus: Status?
-  )
-
   data class Results(
-    val results: List<Result>,
+    val shortestPathsToLeakingInstances: List<ReferencePathNode>,
     val dominatedInstances: LongLongScatterMap
   )
 
   fun findPaths(
     graph: HprofGraph,
-    exclusions: List<Exclusion>,
+    referenceMatchers: List<ReferenceMatcher>,
     leakingInstanceObjectIds: Set<Long>,
-    gcRootIds: MutableList<GcRoot>,
     computeDominators: Boolean,
     listener: AnalyzerProgressListener
   ): Results {
-    listener.onProgressUpdate(FINDING_SHORTEST_PATHS)
+
+    listener.onProgressUpdate(FINDING_PATHS_TO_LEAKING_INSTANCES)
     clearState()
     this.leakingInstanceObjectIds = leakingInstanceObjectIds
 
-    val objectClass = graph.indexedClass("java.lang.Object")
+    val objectClass = graph.findClassByClassName("java.lang.Object")
     sizeOfObjectInstances = if (objectClass != null) {
       // In Android 16 ClassDumpRecord.instanceSize can be 8 yet there are 0 fields.
       // Better rely on our own computation of instance size.
@@ -135,61 +123,66 @@ internal class ShortestPathFinder {
       0
     }
 
-    val fieldNameByClassName = mutableMapOf<String, MutableMap<String, Exclusion>>()
-    val staticFieldNameByClassName = mutableMapOf<String, MutableMap<String, Exclusion>>()
-    val threadNames = mutableMapOf<String, Exclusion>()
+    val fieldNameByClassName = mutableMapOf<String, MutableMap<String, ReferenceMatcher>>()
+    val staticFieldNameByClassName = mutableMapOf<String, MutableMap<String, ReferenceMatcher>>()
+    val threadNames = mutableMapOf<String, ReferenceMatcher>()
 
-    exclusions.filter { it.filter(graph) }
-        .forEach { exclusion ->
-          when (exclusion.type) {
-            is ExclusionType.JavaLocalExclusion -> {
-              threadNames[exclusion.type.threadName] = exclusion
+    referenceMatchers.filter {
+      (it is IgnoredReferenceMatcher || (it is LibraryLeakReferenceMatcher && it.patternApplies(
+          graph
+      )))
+    }
+        .forEach { referenceMatcher ->
+          when (val pattern = referenceMatcher.pattern) {
+            is ReferencePattern.JavaLocalPattern -> {
+              threadNames[pattern.threadName] = referenceMatcher
             }
-            is StaticFieldExclusion -> {
-              val mapOrNull = staticFieldNameByClassName[exclusion.type.className]
+            is StaticFieldPattern -> {
+              val mapOrNull = staticFieldNameByClassName[pattern.className]
               val map = if (mapOrNull != null) mapOrNull else {
-                val newMap = mutableMapOf<String, Exclusion>()
-                staticFieldNameByClassName[exclusion.type.className] = newMap
+                val newMap = mutableMapOf<String, ReferenceMatcher>()
+                staticFieldNameByClassName[pattern.className] = newMap
                 newMap
               }
-              map[exclusion.type.fieldName] = exclusion
+              map[pattern.fieldName] = referenceMatcher
             }
-            is InstanceFieldExclusion -> {
-              val mapOrNull = fieldNameByClassName[exclusion.type.className]
+            is InstanceFieldPattern -> {
+              val mapOrNull = fieldNameByClassName[pattern.className]
               val map = if (mapOrNull != null) mapOrNull else {
-                val newMap = mutableMapOf<String, Exclusion>()
-                fieldNameByClassName[exclusion.type.className] = newMap
+                val newMap = mutableMapOf<String, ReferenceMatcher>()
+                fieldNameByClassName[pattern.className] = newMap
                 newMap
               }
-              map[exclusion.type.fieldName] = exclusion
+              map[pattern.fieldName] = referenceMatcher
             }
           }
         }
 
-    enqueueGcRoots(graph, gcRootIds, threadNames, computeDominators)
+    enqueueGcRoots(graph, threadNames, computeDominators)
 
-    var lowestPriority = ALWAYS_REACHABLE
-    val results = mutableListOf<Result>()
-    visitingQueue@ while (!toVisitQueue.isEmpty()) {
-      val node = toVisitQueue.poll()!!
-      val priority = toVisitMap[node.instance]!!
-      // Lowest priority has the highest value
-      if (priority > lowestPriority) {
-        lowestPriority = priority
+    val shortestPathsToLeakingInstances = mutableListOf<ReferencePathNode>()
+    visitingQueue@ while (!toVisitQueue.isEmpty() || !toVisitLastQueue.isEmpty()) {
+      val node = if (!toVisitQueue.isEmpty()) {
+        val removedNode = toVisitQueue.poll()
+        toVisitSet.remove(removedNode.instance)
+        removedNode
+      } else {
+        val removedNode = toVisitLastQueue.poll()
+        toVisitLastSet.remove(removedNode.instance)
+        removedNode
       }
 
-      toVisitMap.remove(node.instance)
-
       if (checkSeen(node)) {
-        continue
+        throw IllegalStateException(
+            "Node $node objectId=${node.instance} should not be enqueued when already visited or enqueued"
+        )
       }
 
       if (node.instance in leakingInstanceObjectIds) {
-        val exclusionPriority = if (lowestPriority == ALWAYS_REACHABLE) null else lowestPriority
-        results.add(Result(node, exclusionPriority))
+        shortestPathsToLeakingInstances.add(node)
         // Found all refs, stop searching (unless computing retained size which stops on weak reachables)
-        if (results.size == leakingInstanceObjectIds.size) {
-          if (computeDominators && lowestPriority < WEAKLY_REACHABLE) {
+        if (shortestPathsToLeakingInstances.size == leakingInstanceObjectIds.size) {
+          if (computeDominators) {
             listener.onProgressUpdate(FINDING_DOMINATORS)
           } else {
             break@visitingQueue
@@ -197,11 +190,7 @@ internal class ShortestPathFinder {
         }
       }
 
-      if (results.size == leakingInstanceObjectIds.size && computeDominators && lowestPriority >= WEAKLY_REACHABLE) {
-        break@visitingQueue
-      }
-
-      when (val graphRecord = graph.indexedObject(node.instance)) {
+      when (val graphRecord = graph.findObjectByObjectId(node.instance)) {
         is GraphClassRecord -> visitClassRecord(
             graph, graphRecord, node, staticFieldNameByClassName, computeDominators
         )
@@ -218,19 +207,20 @@ internal class ShortestPathFinder {
 
     clearState()
 
-    return Results(results, dominatedInstances)
+    return Results(shortestPathsToLeakingInstances, dominatedInstances)
   }
 
-  private fun checkSeen(node: LeakNode): Boolean {
+  private fun checkSeen(node: ReferencePathNode): Boolean {
     val neverSeen = visitedSet.add(node.instance)
     return !neverSeen
   }
 
   private fun clearState() {
     toVisitQueue.clear()
-    toVisitMap.clear()
+    toVisitLastQueue.clear()
+    toVisitSet.clear()
+    toVisitLastSet.clear()
     visitedSet.release()
-    visitOrder = 0
     dominatedInstances = LongLongScatterMap()
     leakingInstanceObjectIds = emptySet()
     sizeOfObjectInstances = 0
@@ -238,59 +228,59 @@ internal class ShortestPathFinder {
 
   private fun enqueueGcRoots(
     graph: HprofGraph,
-    gcRoots: MutableList<GcRoot>,
-    threadNameExclusions: Map<String, Exclusion>,
+    threadNameReferenceMatchers: Map<String, ReferenceMatcher>,
     computeDominators: Boolean
   ) {
-    gcRoots.removeAll { it.id == 0L }
+    val gcRoots = sortedGcRoots(graph)
 
-    // Sorting GC roots to get stable shortest path
-    // Once sorted all ThreadObject Gc Roots are located before JavaLocalExclusion Gc Roots.
-    // This ensures ThreadObjects are visited before JavaFrames, and threadsBySerialNumber can be
-    // built before JavaFrames.
-    sortGcRoots(graph, gcRoots)
-
-    val threadsBySerialNumber = mutableMapOf<Int, ThreadObject>()
-    gcRoots.forEach { gcRoot ->
+    val threadsBySerialNumber = mutableMapOf<Int, Pair<GraphInstanceRecord, ThreadObject>>()
+    gcRoots.forEach { (objectRecord, gcRoot) ->
       if (computeDominators) {
         undominateWithSkips(graph, gcRoot.id)
       }
       when (gcRoot) {
         is ThreadObject -> {
-          threadsBySerialNumber[gcRoot.threadSerialNumber] = gcRoot
-          enqueue(graph, RootNode(gcRoot, gcRoot.id, visitOrder++), exclusionPriority = null)
+          threadsBySerialNumber[gcRoot.threadSerialNumber] = objectRecord.asInstance!! to gcRoot
+          enqueue(graph, RootNode(gcRoot, gcRoot.id))
         }
         is JavaFrame -> {
-          val threadRoot = threadsBySerialNumber.getValue(gcRoot.threadSerialNumber)
-          val threadInstance = graph.indexedObject(threadRoot.id).asInstance!!
+          val (threadInstance, threadRoot) = threadsBySerialNumber.getValue(
+              gcRoot.threadSerialNumber
+          )
           val threadName = threadInstance[Thread::class, "name"]?.value?.readAsJavaString()
-          val exclusion = threadNameExclusions[threadName]
+          val referenceMatcher = threadNameReferenceMatchers[threadName]
 
-          if (exclusion == null || exclusion.status != NEVER_REACHABLE) {
+          if (referenceMatcher !is IgnoredReferenceMatcher) {
             // visitOrder is unused as this root node isn't enqueued.
-            val rootNode = RootNode(gcRoot, threadRoot.id, visitOrder = 0)
+            val rootNode = RootNode(gcRoot, threadRoot.id)
             // TODO #1352 Instead of <Java Local>, it should be <local variable in Foo.bar()>
             // We should also add the full stacktrace as a label of thread objects
             val leakReference = LeakReference(LOCAL, "")
-            enqueue(
-                graph,
-                ChildNode(gcRoot.id, visitOrder++, exclusion?.description, rootNode, leakReference),
-                exclusionPriority = exclusion?.status
-            )
+
+            val childNode = if (referenceMatcher is LibraryLeakReferenceMatcher) {
+              LibraryLeakNode(gcRoot.id, rootNode, leakReference, referenceMatcher)
+            } else {
+              NormalNode(gcRoot.id, rootNode, leakReference)
+            }
+            enqueue(graph, childNode)
           }
         }
-        else -> enqueue(graph, RootNode(gcRoot, gcRoot.id, visitOrder++), exclusionPriority = null)
+        else -> enqueue(graph, RootNode(gcRoot, gcRoot.id))
       }
     }
-    gcRoots.clear()
   }
 
-  private fun sortGcRoots(
-    graph: HprofGraph,
-    gcRoots: MutableList<GcRoot>
-  ) {
-    val rootClassName: (GcRoot) -> String = {
-      when (val graphObject = graph.indexedObject(it.id)) {
+  /**
+   * Sorting GC roots to get stable shortest path
+   * Once sorted all ThreadObject Gc Roots are located before JavaLocalPattern Gc Roots.
+   * This ensures ThreadObjects are visited before JavaFrames, and threadsBySerialNumber can be
+   * built before JavaFrames.
+   */
+  private fun sortedGcRoots(
+    graph: HprofGraph
+  ): List<Pair<GraphObjectRecord, GcRoot>> {
+    val rootClassName: (GraphObjectRecord) -> String = { graphObject ->
+      when (graphObject) {
         is GraphClassRecord -> {
           graphObject.name
         }
@@ -305,22 +295,25 @@ internal class ShortestPathFinder {
         }
       }
     }
-    gcRoots.sortWith(Comparator { root1, root2 ->
-      // Sorting based on type name first. In reverse order so that ThreadObject is before JavaLocalExclusion
-      val gcRootTypeComparison = root2::class.java.name.compareTo(root1::class.java.name)
-      if (gcRootTypeComparison != 0) {
-        gcRootTypeComparison
-      } else {
-        rootClassName(root1).compareTo(rootClassName(root2))
-      }
-    })
+
+    return graph.gcRoots
+        .map { graph.findObjectByObjectId(it.id) to it }
+        .sortedWith(Comparator { (graphObject1, root1), (graphObject2, root2) ->
+          // Sorting based on pattern name first. In reverse order so that ThreadObject is before JavaLocalPattern
+          val gcRootTypeComparison = root2::class.java.name.compareTo(root1::class.java.name)
+          if (gcRootTypeComparison != 0) {
+            gcRootTypeComparison
+          } else {
+            rootClassName(graphObject1).compareTo(rootClassName(graphObject2))
+          }
+        })
   }
 
   private fun visitClassRecord(
     graph: HprofGraph,
     classRecord: GraphClassRecord,
-    node: LeakNode,
-    staticFieldNameByClassName: Map<String, Map<String, Exclusion>>,
+    parent: ReferencePathNode,
+    staticFieldNameByClassName: Map<String, Map<String, ReferenceMatcher>>,
     computeRetainedHeapSize: Boolean
   ) {
     val ignoredStaticFields = staticFieldNameByClassName[classRecord.name] ?: emptyMap()
@@ -335,39 +328,46 @@ internal class ShortestPathFinder {
         continue
       }
 
-      val objectId = staticField.value.asObjectIdReference!!
+      val objectId = staticField.value.asObjectId!!
 
       if (computeRetainedHeapSize) {
         undominateWithSkips(graph, objectId)
       }
 
-      val leakReference = LeakReference(STATIC_FIELD, fieldName)
-
-      val exclusion = ignoredStaticFields[fieldName]
-
-      enqueue(
-          graph,
-          ChildNode(objectId, visitOrder++, exclusion?.description, node, leakReference),
-          exclusion?.status
-      )
+      when (val referenceMatcher = ignoredStaticFields[fieldName]) {
+        null -> {
+          enqueue(
+              graph,
+              NormalNode(objectId, parent, LeakReference(STATIC_FIELD, fieldName))
+          )
+        }
+        is LibraryLeakReferenceMatcher -> {
+          enqueue(
+              graph,
+              LibraryLeakNode(
+                  objectId, parent, LeakReference(STATIC_FIELD, fieldName), referenceMatcher
+              )
+          )
+        }
+      }
     }
   }
 
   private fun visitInstanceRecord(
     graph: HprofGraph,
     instanceRecord: GraphInstanceRecord,
-    parent: LeakNode,
-    fieldNameByClassName: Map<String, Map<String, Exclusion>>,
+    parent: ReferencePathNode,
+    fieldNameByClassName: Map<String, Map<String, ReferenceMatcher>>,
     computeRetainedHeapSize: Boolean
   ) {
-    val ignoredFields = LinkedHashMap<String, Exclusion>()
+    val fieldReferenceMatchers = LinkedHashMap<String, ReferenceMatcher>()
 
     instanceRecord.instanceClass.classHierarchy.forEach {
-      val classExclusions = fieldNameByClassName[it.name]
-      if (classExclusions != null) {
-        for ((fieldName, exclusion) in classExclusions) {
-          if (!ignoredFields.containsKey(fieldName)) {
-            ignoredFields[fieldName] = exclusion
+      val referenceMatcherByField = fieldNameByClassName[it.name]
+      if (referenceMatcherByField != null) {
+        for ((fieldName, referenceMatcher) in referenceMatcherByField) {
+          if (!fieldReferenceMatchers.containsKey(fieldName)) {
+            fieldReferenceMatchers[fieldName] = referenceMatcher
           }
         }
       }
@@ -380,30 +380,37 @@ internal class ShortestPathFinder {
 
     fieldNamesAndValues.filter { it.value.isNonNullReference }
         .forEach { field ->
-          val objectId = field.value.asObjectIdReference!!
+          val objectId = field.value.asObjectId!!
           if (computeRetainedHeapSize) {
             updateDominatorWithSkips(graph, parent.instance, objectId)
           }
-
-          val exclusion = ignoredFields[field.name]
-          enqueue(
-              graph, ChildNode(
-              objectId,
-              visitOrder++, exclusion?.description, parent,
-              LeakReference(INSTANCE_FIELD, field.name)
-          ), exclusion?.status
-          )
+          when (val referenceMatcher = fieldReferenceMatchers[field.name]) {
+            null -> {
+              enqueue(
+                  graph,
+                  NormalNode(objectId, parent, LeakReference(INSTANCE_FIELD, field.name))
+              )
+            }
+            is LibraryLeakReferenceMatcher -> {
+              enqueue(
+                  graph,
+                  LibraryLeakNode(
+                      objectId, parent, LeakReference(INSTANCE_FIELD, field.name), referenceMatcher
+                  )
+              )
+            }
+          }
         }
   }
 
   private fun visitObjectArrayRecord(
     graph: HprofGraph,
     record: ObjectArrayDumpRecord,
-    parentNode: LeakNode,
+    parentNode: ReferencePathNode,
     computeRetainedHeapSize: Boolean
   ) {
-    record.elementIds.filter {objectId ->
-      objectId != 0L && graph.objectIdExists(objectId).apply {
+    record.elementIds.filter { objectId ->
+      objectId != HeapValue.NULL_REFERENCE && graph.objectExists(objectId).apply {
         if (!this) {
           // dalvik.system.PathClassLoader.runtimeInternalObjects references objects which don't
           // otherwise exist in the heap dump.
@@ -416,40 +423,46 @@ internal class ShortestPathFinder {
             updateDominatorWithSkips(graph, parentNode.instance, elementId)
           }
           val name = Integer.toString(index)
-          val reference = LeakReference(ARRAY_ENTRY, name)
-          enqueue(graph, ChildNode(elementId, visitOrder++, null, parentNode, reference), null)
+          enqueue(
+              graph,
+              NormalNode(elementId, parentNode, LeakReference(ARRAY_ENTRY, name))
+          )
         }
   }
 
   private fun enqueue(
     graph: HprofGraph,
-    node: LeakNode,
-    exclusionPriority: Status?
+    node: ReferencePathNode
   ) {
-    // 0L is null
-    if (node.instance == 0L) {
+    if (node.instance == HeapValue.NULL_REFERENCE) {
       return
     }
     if (visitedSet.contains(node.instance)) {
       return
     }
-    if (exclusionPriority == NEVER_REACHABLE) {
+    // Already enqueued => shorter or equal distance
+    if (toVisitSet.contains(node.instance)) {
       return
     }
-
-    val nodePriority = exclusionPriority ?: ALWAYS_REACHABLE
-
-    // Whether we want to visit now or later, we should skip if this is already to visit.
-    val existingPriority = toVisitMap[node.instance]
-
-    if (existingPriority != null && existingPriority <= nodePriority) {
-      return
+    //
+    if (toVisitLastSet.contains(node.instance)) {
+      // Already enqueued => shorter or equal distance amongst library leak ref patterns.
+      if (node is LibraryLeakNode) {
+        return
+      } else {
+        toVisitQueue.add(node)
+        toVisitSet.add(node.instance)
+        val nodeToRemove = toVisitLastQueue.first { it.instance == node.instance }
+        toVisitLastQueue.remove(nodeToRemove)
+        toVisitLastSet.remove(node.instance)
+        return
+      }
     }
 
     val isLeakingInstance = node.instance in leakingInstanceObjectIds
 
     if (!isLeakingInstance) {
-      val skip = when (val graphObject = graph.indexedObject(node.instance)) {
+      val skip = when (val graphObject = graph.findObjectByObjectId(node.instance)) {
         is GraphClassRecord -> false
         is GraphInstanceRecord ->
           when {
@@ -468,12 +481,13 @@ internal class ShortestPathFinder {
         return
       }
     }
-
-    if (existingPriority != null) {
-      toVisitQueue.removeAll { it.instance == node.instance }
+    if (node is LibraryLeakNode) {
+      toVisitLastQueue.add(node)
+      toVisitLastSet.add(node.instance)
+    } else {
+      toVisitQueue.add(node)
+      toVisitSet.add(node.instance)
     }
-    toVisitMap[node.instance] = nodePriority
-    toVisitQueue.add(node)
   }
 
   private fun updateDominatorWithSkips(
@@ -482,7 +496,7 @@ internal class ShortestPathFinder {
     objectId: Long
   ) {
 
-    when (val graphObject = graph.indexedObject(objectId)) {
+    when (val graphObject = graph.findObjectByObjectId(objectId)) {
       is GraphClassRecord -> {
         undominate(objectId, false)
       }
@@ -490,7 +504,7 @@ internal class ShortestPathFinder {
         // String internal array is never enqueued
         if (graphObject.className == "java.lang.String") {
           updateDominator(parentObjectId, objectId, true)
-          val valueId = graphObject["java.lang.String", "value"]?.value?.asObjectIdReference
+          val valueId = graphObject["java.lang.String", "value"]?.value?.asObjectId
           if (valueId != null) {
             updateDominator(parentObjectId, valueId, true)
           }
@@ -521,7 +535,7 @@ internal class ShortestPathFinder {
     neverEnqueued: Boolean
   ) {
     val currentDominator = dominatedInstances[instance]
-    if (currentDominator == null && (instance in visitedSet || instance in toVisitMap)) {
+    if (currentDominator == null && (instance in visitedSet || instance in toVisitSet || instance in toVisitLastSet)) {
       return
     }
     val parentDominator = dominatedInstances[parent]
@@ -582,7 +596,7 @@ internal class ShortestPathFinder {
     graph: HprofGraph,
     objectId: Long
   ) {
-    when (val graphObject = graph.indexedObject(objectId)) {
+    when (val graphObject = graph.findObjectByObjectId(objectId)) {
       is GraphClassRecord -> {
         undominate(objectId, false)
       }
@@ -590,7 +604,7 @@ internal class ShortestPathFinder {
         // String internal array is never enqueued
         if (graphObject.className == "java.lang.String") {
           undominate(objectId, true)
-          val valueId = graphObject["java.lang.String", "value"]?.value?.asObjectIdReference
+          val valueId = graphObject["java.lang.String", "value"]?.value?.asObjectId
           if (valueId != null) {
             undominate(valueId, true)
           }
@@ -623,11 +637,5 @@ internal class ShortestPathFinder {
     if (neverEnqueued) {
       visitedSet.add(instance)
     }
-  }
-
-  companion object {
-    // Since NEVER_REACHABLE never ends up in the queue, we use its value to mean "ALWAYS_REACHABLE"
-    // For this to work we need NEVER_REACHABLE to be declared as the first enum value.
-    private val ALWAYS_REACHABLE = NEVER_REACHABLE
   }
 }

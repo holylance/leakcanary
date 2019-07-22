@@ -17,6 +17,7 @@ package leakcanary
 
 import android.app.Instrumentation
 import android.os.Bundle
+import android.util.Log
 import androidx.test.internal.runner.listener.InstrumentationResultPrinter
 import androidx.test.internal.runner.listener.InstrumentationResultPrinter.REPORT_VALUE_RESULT_FAILURE
 import androidx.test.platform.app.InstrumentationRegistry.getInstrumentation
@@ -28,13 +29,12 @@ import org.junit.runner.notification.RunListener
 
 /**
  *
- * A JUnit [RunListener] for detecting memory leaks in Android instrumentation tests. It
- * waits for the end of a test, and if the test succeeds then it will look for leaking
- * references, trigger a heap dump if needed and perform an analysis.
+ * A JUnit [RunListener] that uses [InstrumentationLeakDetector] to detect memory leaks in Android
+ * instrumentation tests. It waits for the end of a test, and if the test succeeds then it will
+ * look for retained objects, trigger a heap dump if needed and perform an analysis.
  *
- *  [FailTestOnLeakRunListener] can be subclassed to override
- * [skipLeakDetectionReason], [reportLeaks]
- * or [buildLeakDetectedMessage]
+ *  [FailTestOnLeakRunListener] can be subclassed to override [skipLeakDetectionReason] and
+ *  [onAnalysisPerformed]
  *
  * @see InstrumentationLeakDetector
  */
@@ -60,7 +60,7 @@ open class FailTestOnLeakRunListener : RunListener() {
 
   /**
    * Can be overridden to skip leak detection based on the description provided when a test
-   * is started. Returns null to continue leak detection, or a string describing the reason for
+   * is started. Return null to continue leak detection, or a string describing the reason for
    * skipping otherwise.
    */
   protected open fun skipLeakDetectionReason(description: Description): String? {
@@ -81,7 +81,7 @@ open class FailTestOnLeakRunListener : RunListener() {
 
   override fun testFinished(description: Description) {
     detectLeaks()
-    LeakSentry.refWatcher.clearWatchedInstances()
+    LeakSentry.objectWatcher.clearWatchedObjects()
   }
 
   override fun testRunStarted(description: Description) {
@@ -101,46 +101,35 @@ open class FailTestOnLeakRunListener : RunListener() {
     val result = leakDetector.detectLeaks()
 
     if (result is AnalysisPerformed) {
-      val applicationLeaks = result.heapAnalysis.applicationLeaks()
-      if (applicationLeaks.isNotEmpty()) {
-        reportLeaks(result.heapAnalysis, applicationLeaks)
+      onAnalysisPerformed(heapAnalysis = result.heapAnalysis)
+    }
+  }
+
+  /**
+   * Called when a heap analysis has been performed and a result is available.
+   *
+   * The default implementation call [failTest] if the [heapAnalysis] failed or if
+   * [HeapAnalysisSuccess.applicationLeaks] is not empty.
+   */
+  protected open fun onAnalysisPerformed(heapAnalysis: HeapAnalysis) {
+    when (heapAnalysis) {
+      is HeapAnalysisFailure -> {
+        failTest(Log.getStackTraceString(heapAnalysis.exception))
+      }
+      is HeapAnalysisSuccess -> {
+        val applicationLeaks = heapAnalysis.applicationLeaks
+        if (applicationLeaks.isNotEmpty()) {
+          failTest("Test failed because application memory leaks were detected:\n$heapAnalysis")
+        }
       }
     }
   }
 
-  /** Can be overridden to report leaks in a different way or do additional reporting.  */
-  protected open fun reportLeaks(
-    heapAnalysis: HeapAnalysis,
-    applicationLeaks: List<LeakingInstance>
-  ) {
-    val message = buildLeakDetectedMessage(heapAnalysis, applicationLeaks)
-
+  /**
+   * Reports that the test has failed, with the provided [message].
+   */
+  protected fun failTest(message: String) {
     bundle.putString(InstrumentationResultPrinter.REPORT_KEY_STACK, message)
     getInstrumentation().sendStatus(REPORT_VALUE_RESULT_FAILURE, bundle)
-  }
-
-  /** Can be overridden to customize the failure string message.  */
-  protected open fun buildLeakDetectedMessage(
-    heapAnalysis: HeapAnalysis,
-    applicationLeaks: List<LeakingInstance>
-  ): String {
-    val failureMessage = StringBuilder()
-    failureMessage.append(
-        "Test failed because memory leaks were detected, see leak traces below.\n"
-    )
-    failureMessage.append(SEPARATOR)
-
-    applicationLeaks.forEach { applicationLeak ->
-      // TODO Improve rendering
-      failureMessage.append(applicationLeak.toString())
-      failureMessage.append("\n ")
-      failureMessage.append(SEPARATOR)
-    }
-
-    return failureMessage.toString()
-  }
-
-  companion object {
-    private const val SEPARATOR = "######################################\n"
   }
 }
