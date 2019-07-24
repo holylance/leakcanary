@@ -20,11 +20,11 @@ import android.content.Intent
 import android.os.Build.VERSION.SDK_INT
 import android.os.Process
 import com.squareup.leakcanary.core.R
-import leakcanary.AnalyzerProgressListener
-import leakcanary.AndroidObjectInspectors
-import leakcanary.CanaryLog
-import leakcanary.HeapAnalyzer
 import leakcanary.LeakCanary
+import shark.OnAnalysisProgressListener
+import shark.HeapAnalyzer
+import shark.ObjectInspectors
+import shark.SharkLog
 import java.io.File
 
 /**
@@ -34,11 +34,11 @@ internal class HeapAnalyzerService : ForegroundService(
     HeapAnalyzerService::class.java.simpleName,
     R.string.leak_canary_notification_analysing,
     R.id.leak_canary_notification_analyzing_heap
-), AnalyzerProgressListener {
+), OnAnalysisProgressListener {
 
   override fun onHandleIntentInForeground(intent: Intent?) {
     if (intent == null) {
-      CanaryLog.d("HeapAnalyzerService received a null intent, ignoring.")
+      SharkLog.d("HeapAnalyzerService received a null intent, ignoring.")
       return
     }
     // Since we're running in the main process we should be careful not to impact it.
@@ -61,16 +61,16 @@ internal class HeapAnalyzerService : ForegroundService(
       heapAnalyzer.checkForLeaks(
           heapDumpFile, config.referenceMatchers, config.computeRetainedHeapSize, config.objectInspectors,
           if (config.useExperimentalLeakFinders) config.objectInspectors else listOf(
-              AndroidObjectInspectors.KEYED_WEAK_REFERENCE
+              ObjectInspectors.KEYED_WEAK_REFERENCE
           )
       )
 
     config.onHeapAnalyzedListener.onHeapAnalyzed(heapAnalysis)
   }
 
-  override fun onProgressUpdate(step: AnalyzerProgressListener.Step) {
-    val percent = (100f * step.ordinal / AnalyzerProgressListener.Step.values().size).toInt()
-    CanaryLog.d("Analysis in progress, working on: %s", step.name)
+  override fun onAnalysisProgress(step: OnAnalysisProgressListener.Step) {
+    val percent = (100f * step.ordinal / shark.OnAnalysisProgressListener.Step.values().size).toInt()
+    SharkLog.d("Analysis in progress, working on: %s", step.name)
     val lowercase = step.name.replace("_", " ")
         .toLowerCase()
     val message = lowercase.substring(0, 1).toUpperCase() + lowercase.substring(1)
