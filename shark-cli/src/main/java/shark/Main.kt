@@ -1,6 +1,5 @@
 package shark
 
-import shark.OnAnalysisProgressListener.Step
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -24,10 +23,22 @@ fun main(args: Array<String>) {
 fun printHelp() {
   val workingDirectory = File(System.getProperty("user.dir"))
 
+  // ASCII art is a remix of a shark from -David "TAZ" Baltazar- and chick from jgs.
   SharkLog.d(
       """
-    LeakCanary CLI
-    Running in directory $workingDirectory
+    Shark CLI, running in directory $workingDirectory
+
+                     ^`.                 .=""=.
+     ^_              \  \               / _  _ \
+     \ \             {   \             |  d  b  |
+     {  \           /     `~~~--__     \   /\   /
+     {   \___----~~'              `~~-_/'-=\/=-'\,
+      \                         /// a  `~.      \ \
+      / /~~~~-, ,__.    ,      ///  __,,,,)      \ |
+      \/      \/    `~~~;   ,---~~-_`/ \        / \/
+                       /   /            '.    .'
+                      '._.'             _|`~~`|_
+                                        /|\  /|\
 
     Commands: [analyze-process, dump-process, analyze-hprof, strip-hprof]
 
@@ -40,7 +51,7 @@ fun printHelp() {
     analyze-hprof: Analyzes the provided hprof file.
       USAGE: analyze-hprof HPROF_FILE_PATH
 
-    strip-hprof: Removes all primitive arrays from the provided hprof file and generates a new "-stripped" hprof file.
+    strip-hprof: Replaces all primitive arrays from the provided hprof file with arrays of zeroes and generates a new "-stripped" hprof file.
       USAGE: strip-hprof HPROF_FILE_PATH
   """.trimIndent()
   )
@@ -132,7 +143,7 @@ private fun analyze(heapDumpFile: File) {
 
   val heapAnalyzer = HeapAnalyzer(listener)
   SharkLog.d("Analyzing heap dump $heapDumpFile")
-  val heapAnalysis = heapAnalyzer.checkForLeaks(
+  val heapAnalysis = heapAnalyzer.analyze(
       heapDumpFile, AndroidReferenceMatchers.appDefaults, true,
       AndroidObjectInspectors.appDefaults
   )

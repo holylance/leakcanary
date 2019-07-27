@@ -15,11 +15,6 @@
  */
 package shark
 
-import shark.OnAnalysisProgressListener.Step.BUILDING_LEAK_TRACES
-import shark.OnAnalysisProgressListener.Step.COMPUTING_NATIVE_RETAINED_SIZE
-import shark.OnAnalysisProgressListener.Step.COMPUTING_RETAINED_SIZE
-import shark.OnAnalysisProgressListener.Step.FINDING_LEAKING_INSTANCES
-import shark.OnAnalysisProgressListener.Step.PARSING_HEAP_DUMP
 import shark.GcRoot.JavaFrame
 import shark.GcRoot.JniGlobal
 import shark.GcRoot.JniLocal
@@ -43,13 +38,17 @@ import shark.LeakTraceElement.Holder.ARRAY
 import shark.LeakTraceElement.Holder.CLASS
 import shark.LeakTraceElement.Holder.OBJECT
 import shark.LeakTraceElement.Holder.THREAD
+import shark.OnAnalysisProgressListener.Step.BUILDING_LEAK_TRACES
+import shark.OnAnalysisProgressListener.Step.COMPUTING_NATIVE_RETAINED_SIZE
+import shark.OnAnalysisProgressListener.Step.COMPUTING_RETAINED_SIZE
+import shark.OnAnalysisProgressListener.Step.FINDING_LEAKING_INSTANCES
+import shark.OnAnalysisProgressListener.Step.PARSING_HEAP_DUMP
+import shark.internal.PathFinder
+import shark.internal.PathFinder.PathFindingResults
 import shark.internal.ReferencePathNode
 import shark.internal.ReferencePathNode.ChildNode
 import shark.internal.ReferencePathNode.ChildNode.LibraryLeakNode
 import shark.internal.ReferencePathNode.RootNode
-import shark.internal.ShortestPathFinder
-import shark.internal.ShortestPathFinder.Results
-import shark.internal.hppc.LongLongScatterMap
 import shark.internal.lastSegment
 import java.io.File
 import java.util.ArrayList
@@ -63,11 +62,19 @@ class HeapAnalyzer constructor(
   private val listener: OnAnalysisProgressListener
 ) {
 
+  private class FindLeakInput(
+    val graph: HeapGraph,
+    val leakFinders: List<ObjectInspector>,
+    val referenceMatchers: List<ReferenceMatcher>,
+    val computeRetainedHeapSize: Boolean,
+    val objectInspectors: List<ObjectInspector>
+  )
+
   /**
    * Searches the heap dump for leaking instances and then computes the shortest strong reference
    * path from those instances to the GC roots.
    */
-  fun checkForLeaks(
+  fun analyze(
     heapDumpFile: File,
     referenceMatchers: List<ReferenceMatcher> = emptyList(),
     computeRetainedHeapSize: Boolean = false,
@@ -86,32 +93,19 @@ class HeapAnalyzer constructor(
 
     try {
       listener.onAnalysisProgress(PARSING_HEAP_DUMP)
-      Hprof.open(heapDumpFile).use { hprof ->
-        val graph = HprofHeapGraph.indexHprof(hprof)
-        listener.onAnalysisProgress(FINDING_LEAKING_INSTANCES)
+      Hprof.open(heapDumpFile)
+          .use { hprof ->
+            val graph = HprofHeapGraph.indexHprof(hprof)
 
-        val leakingInstanceObjectIds = findLeakingInstances(graph, leakFinders)
-
-        val (shortestPathsToLeakingInstances, dominatedInstances) =
-          findShortestPaths(
-              graph, referenceMatchers, leakingInstanceObjectIds, computeRetainedHeapSize
-          )
-
-        val retainedSizes = if (computeRetainedHeapSize) {
-          computeRetainedSizes(graph, shortestPathsToLeakingInstances, dominatedInstances)
-        } else {
-          null
-        }
-
-        val (applicationLeaks, libraryLeaks) = buildLeakTraces(
-            objectInspectors, shortestPathsToLeakingInstances, graph, retainedSizes
-        )
-
-        return HeapAnalysisSuccess(
-            heapDumpFile, System.currentTimeMillis(), since(analysisStartNanoTime),
-            applicationLeaks, libraryLeaks
-        )
-      }
+            val findLeakInput = FindLeakInput(
+                graph, leakFinders, referenceMatchers, computeRetainedHeapSize, objectInspectors
+            )
+            val (applicationLeaks, libraryLeaks) = findLeakInput.findLeaks()
+            return HeapAnalysisSuccess(
+                heapDumpFile, System.currentTimeMillis(), since(analysisStartNanoTime),
+                applicationLeaks, libraryLeaks
+            )
+          }
     } catch (exception: Throwable) {
       return HeapAnalysisFailure(
           heapDumpFile, System.currentTimeMillis(), since(analysisStartNanoTime),
@@ -120,32 +114,28 @@ class HeapAnalyzer constructor(
     }
   }
 
-  private fun findLeakingInstances(
-    graph: HeapGraph,
-    objectInspectors: List<ObjectInspector>
-  ): Set<Long> {
+  private fun FindLeakInput.findLeaks(): Pair<List<ApplicationLeak>, List<LibraryLeak>> {
+    val leakingInstanceObjectIds = findLeakingObjects()
+
+    val pathFinder = PathFinder(graph, listener, referenceMatchers)
+    val pathFindingResults =
+      pathFinder.findPathsFromGcRoots(leakingInstanceObjectIds, computeRetainedHeapSize)
+
+    return buildLeakTraces(pathFindingResults)
+  }
+
+  private fun FindLeakInput.findLeakingObjects(): Set<Long> {
+    listener.onAnalysisProgress(FINDING_LEAKING_INSTANCES)
     return graph.objects
         .filter { objectRecord ->
           val reporter = ObjectReporter(objectRecord)
-          objectInspectors.forEach { inspector ->
+          leakFinders.any { inspector ->
             inspector.inspect(reporter)
+            reporter.leakingReasons.isNotEmpty()
           }
-          reporter.leakingStatuses.isNotEmpty()
         }
         .map { it.objectId }
         .toSet()
-  }
-
-  private fun findShortestPaths(
-    graph: HeapGraph,
-    referenceMatchers: List<ReferenceMatcher>,
-    leakingInstanceObjectIds: Set<Long>,
-    computeDominators: Boolean
-  ): Results {
-    val pathFinder = ShortestPathFinder()
-    return pathFinder.findPaths(
-        graph, referenceMatchers, leakingInstanceObjectIds, computeDominators, listener
-    )
   }
 
   internal sealed class TrieNode {
@@ -224,11 +214,13 @@ class HeapAnalyzer constructor(
     }
   }
 
-  private fun computeRetainedSizes(
-    graph: HeapGraph,
-    results: List<ReferencePathNode>,
-    dominatedInstances: LongLongScatterMap
-  ): List<Int> {
+  private fun FindLeakInput.computeRetainedSizes(pathFindingResults: PathFindingResults): List<Int>? {
+    if (!computeRetainedHeapSize) {
+      return null
+    }
+    val pathsToLeakingInstances = pathFindingResults.pathsToLeakingInstances
+    val dominatedInstances = pathFindingResults.dominatedInstances
+
     listener.onAnalysisProgress(COMPUTING_NATIVE_RETAINED_SIZE)
 
     // Map of Object id to native size as tracked by NativeAllocationRegistry$CleanerThunk
@@ -274,7 +266,7 @@ class HeapAnalyzer constructor(
 
     // Include self size for leaking instances
     val leakingInstanceIds = mutableSetOf<Long>()
-    results.forEach { pathNode ->
+    pathsToLeakingInstances.forEach { pathNode ->
       val leakingInstanceObjectId = pathNode.instance
       leakingInstanceIds.add(leakingInstanceObjectId)
       val instanceRecord = graph.findObjectById(leakingInstanceObjectId).asInstance!!
@@ -308,7 +300,7 @@ class HeapAnalyzer constructor(
     var sizedMoved: Boolean
     do {
       sizedMoved = false
-      results.map { it.instance }
+      pathsToLeakingInstances.map { it.instance }
           .forEach { leakingInstanceId ->
             val dominator = dominatedInstances[leakingInstanceId]
             if (dominator != null) {
@@ -323,23 +315,20 @@ class HeapAnalyzer constructor(
           }
     } while (sizedMoved)
     dominatedInstances.release()
-    return results.map { pathNode ->
+    return pathsToLeakingInstances.map { pathNode ->
       sizeByDominator[pathNode.instance]!!
     }
   }
 
-  private fun buildLeakTraces(
-    objectInspectors: List<ObjectInspector>,
-    shortestPathsToLeakingInstances: List<ReferencePathNode>,
-    graph: HeapGraph,
-    retainedSizes: List<Int>?
-  ): Pair<List<ApplicationLeak>, List<LibraryLeak>> {
+  private fun FindLeakInput.buildLeakTraces(pathFindingResults: PathFindingResults): Pair<List<ApplicationLeak>, List<LibraryLeak>> {
+    val retainedSizes = computeRetainedSizes(pathFindingResults)
+
     listener.onAnalysisProgress(BUILDING_LEAK_TRACES)
 
     val applicationLeaks = mutableListOf<ApplicationLeak>()
     val libraryLeaks = mutableListOf<LibraryLeak>()
 
-    val deduplicatedPaths = deduplicateShortestPaths(shortestPathsToLeakingInstances)
+    val deduplicatedPaths = deduplicateShortestPaths(pathFindingResults.pathsToLeakingInstances)
 
     deduplicatedPaths.forEachIndexed { index, pathNode ->
       val shortestChildPath = mutableListOf<ChildNode>()
@@ -396,10 +385,12 @@ class HeapAnalyzer constructor(
 
     val elements = shortestPath.mapIndexed { index, pathNode ->
       val leakReporter = leakReporters[index]
-      val leakStatus = leakStatuses[index]
+      val (leakStatus, leakStatusReason) = leakStatuses[index]
       val reference =
         if (index < shortestPath.lastIndex) (shortestPath[index + 1] as ChildNode).referenceFromParent else null
-      buildLeakElement(graph, pathNode, reference, leakReporter.labels, leakStatus)
+      buildLeakElement(
+          graph, pathNode, reference, leakReporter.labels, leakStatus, leakStatusReason
+      )
     }
     return LeakTrace(elements)
   }
@@ -407,41 +398,41 @@ class HeapAnalyzer constructor(
   private fun computeLeakStatuses(
     rootNode: RootNode,
     leakReporters: List<ObjectReporter>
-  ): List<LeakNodeStatusAndReason> {
+  ): List<Pair<LeakNodeStatus, String>> {
     val lastElementIndex = leakReporters.size - 1
 
     val rootNodeReporter = leakReporters[0]
 
-    rootNodeReporter.addLabel(
-        "GC Root: " + when (rootNode.gcRoot) {
-          is ThreadObject -> "Thread object"
-          is JniGlobal -> "Global variable in native code"
-          is JniLocal -> "Local variable in native code"
-          is JavaFrame -> "Java local variable"
-          is NativeStack -> "Input or output parameters in native code"
-          is StickyClass -> "System class"
-          is ThreadBlock -> "Thread block"
-          is MonitorUsed -> "Monitor (anything that called the wait() or notify() methods, or that is synchronized.)"
-          is ReferenceCleanup -> "Reference cleanup"
-          is JniMonitor -> "Root JNI monitor"
-          else -> throw IllegalStateException("Unexpected gc root ${rootNode.gcRoot}")
-        }
-    )
+    rootNodeReporter.labels +=
+      "GC Root: " + when (rootNode.gcRoot) {
+        is ThreadObject -> "Thread object"
+        is JniGlobal -> "Global variable in native code"
+        is JniLocal -> "Local variable in native code"
+        is JavaFrame -> "Java local variable"
+        is NativeStack -> "Input or output parameters in native code"
+        is StickyClass -> "System class"
+        is ThreadBlock -> "Thread block"
+        is MonitorUsed -> "Monitor (anything that called the wait() or notify() methods, or that is synchronized.)"
+        is ReferenceCleanup -> "Reference cleanup"
+        is JniMonitor -> "Root JNI monitor"
+        else -> throw IllegalStateException("Unexpected gc root ${rootNode.gcRoot}")
+      }
 
     var lastNotLeakingElementIndex = 0
     var firstLeakingElementIndex = lastElementIndex
 
-    val leakStatuses = ArrayList<LeakNodeStatusAndReason>()
+    val leakStatuses = ArrayList<Pair<LeakNodeStatus, String>>()
 
     for ((index, reporter) in leakReporters.withIndex()) {
-      val leakStatus = resolveStatus(reporter)
-      leakStatuses.add(leakStatus)
-      if (leakStatus.status == NOT_LEAKING) {
+      val resolvedStatusPair = resolveStatus(reporter)
+      leakStatuses.add(resolvedStatusPair)
+      val (leakStatus, _) = resolvedStatusPair
+      if (leakStatus == NOT_LEAKING) {
         lastNotLeakingElementIndex = index
         // Reset firstLeakingElementIndex so that we never have
         // firstLeakingElementIndex < lastNotLeakingElementIndex
         firstLeakingElementIndex = lastElementIndex
-      } else if (firstLeakingElementIndex == lastElementIndex && leakStatus.status == LEAKING) {
+      } else if (firstLeakingElementIndex == lastElementIndex && leakStatus == LEAKING) {
         firstLeakingElementIndex = index
       }
     }
@@ -452,27 +443,19 @@ class HeapAnalyzer constructor(
 
     // First and last are always known.
     for (i in 0..lastElementIndex) {
-      val leakStatus = leakStatuses[i]
+      val (leakStatus, leakStatusReason) = leakStatuses[i]
       if (i < lastNotLeakingElementIndex) {
         val nextNotLeakingName = simpleClassNames[i + 1]
-        leakStatuses[i] = when (leakStatus.status) {
-          UNKNOWN -> LeakNodeStatus.notLeaking("$nextNotLeakingName↓ is not leaking")
-          NOT_LEAKING -> LeakNodeStatus.notLeaking(
-              "$nextNotLeakingName↓ is not leaking and ${leakStatus.reason}"
-          )
-          LEAKING -> LeakNodeStatus.notLeaking(
-              "$nextNotLeakingName↓ is not leaking. Conflicts with ${leakStatus.reason}"
-          )
+        leakStatuses[i] = when (leakStatus) {
+          UNKNOWN -> NOT_LEAKING to "$nextNotLeakingName↓ is not leaking"
+          NOT_LEAKING -> NOT_LEAKING to "$nextNotLeakingName↓ is not leaking and $leakStatusReason"
+          LEAKING -> NOT_LEAKING to "$nextNotLeakingName↓ is not leaking. Conflicts with $leakStatusReason"
         }
       } else if (i > firstLeakingElementIndex) {
         val previousLeakingName = simpleClassNames[i - 1]
-        leakStatuses[i] = LeakNodeStatus.leaking("$previousLeakingName↑ is leaking")
-
-        leakStatuses[i] = when (leakStatus.status) {
-          UNKNOWN -> LeakNodeStatus.leaking("$previousLeakingName↑ is leaking")
-          LEAKING -> LeakNodeStatus.leaking(
-              "$previousLeakingName↑ is leaking and ${leakStatus.reason}"
-          )
+        leakStatuses[i] = when (leakStatus) {
+          UNKNOWN -> LEAKING to "$previousLeakingName↑ is leaking"
+          LEAKING -> LEAKING to "$previousLeakingName↑ is leaking and $leakStatusReason"
           NOT_LEAKING -> throw IllegalStateException("Should never happen")
         }
       }
@@ -482,42 +465,34 @@ class HeapAnalyzer constructor(
 
   private fun resolveStatus(
     reporter: ObjectReporter
-  ): LeakNodeStatusAndReason {
-    // NOT_LEAKING always wins over LEAKING
-    var current = LeakNodeStatus.unknown()
-    for (statusAndReason in reporter.leakNodeStatuses) {
-      current = when {
-        current.status == UNKNOWN -> statusAndReason
-        current.status == LEAKING && statusAndReason.status == LEAKING -> {
-          LeakNodeStatus.leaking("${current.reason} and ${statusAndReason.reason}")
-        }
-        current.status == NOT_LEAKING && statusAndReason.status == NOT_LEAKING -> {
-          LeakNodeStatus.notLeaking("${current.reason} and ${statusAndReason.reason}")
-        }
-        current.status == NOT_LEAKING && statusAndReason.status == LEAKING -> {
-          LeakNodeStatus.notLeaking(
-              "${current.reason}. Conflicts with ${statusAndReason.reason}"
-          )
-        }
-        current.status == LEAKING && statusAndReason.status == NOT_LEAKING -> {
-          LeakNodeStatus.notLeaking(
-              "${statusAndReason.reason}. Conflicts with ${current.reason}"
-          )
-        }
-        else -> throw IllegalStateException(
-            "Should never happen ${current.status} ${statusAndReason.reason}"
-        )
+  ): Pair<LeakNodeStatus, String> {
+    var status = UNKNOWN
+    var reason = ""
+    if (reporter.notLeakingReasons.isNotEmpty()) {
+      status = NOT_LEAKING
+      reason = reporter.notLeakingReasons.joinToString(" and ")
+    }
+
+    val leakingReasons = reporter.leakingReasons + reporter.likelyLeakingReasons
+    if (leakingReasons.isNotEmpty()) {
+      // NOT_LEAKING wins over LEAKING
+      if (status == NOT_LEAKING) {
+        reason += ". Conflicts with ${leakingReasons.joinToString(" and ")}"
+      } else {
+        status = LEAKING
+        reason = leakingReasons.joinToString(" and ")
       }
     }
-    return current
+    return status to reason
   }
 
   private fun buildLeakElement(
     graph: HeapGraph,
     node: ReferencePathNode,
     reference: LeakReference?,
-    labels: List<String>,
-    leakStatus: LeakNodeStatusAndReason
+    labels: Set<String>,
+    leakStatus: LeakNodeStatus,
+    leakStatusReason: String
   ): LeakTraceElement {
     val objectId = node.instance
 
@@ -537,7 +512,7 @@ class HeapAnalyzer constructor(
         OBJECT
       }
     }
-    return LeakTraceElement(reference, holderType, className, labels, leakStatus)
+    return LeakTraceElement(reference, holderType, className, labels, leakStatus, leakStatusReason)
   }
 
   private fun recordClassName(

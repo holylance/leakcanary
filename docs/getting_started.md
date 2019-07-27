@@ -15,4 +15,4 @@ What's next?
 
 * Learn the [Fundamentals](fundamentals.md)
 * Try the [code recipes](recipes.md)
-* Read the [FAQ](faq.md)
+* Read the [FAQ](faq.md), e.g. [How does LeakCanary get installed by only adding a dependency?](faq.md#how-does-leakcanary-get-installed-by-only-adding-a-dependency)

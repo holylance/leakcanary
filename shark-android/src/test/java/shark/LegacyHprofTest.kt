@@ -2,6 +2,10 @@ package shark
 
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.Test
+import shark.LeakNodeStatus.LEAKING
+import shark.LegacyHprofTest.WRAPS_ACTIVITY.DESTROYED
+import shark.LegacyHprofTest.WRAPS_ACTIVITY.NOT_ACTIVITY
+import shark.LegacyHprofTest.WRAPS_ACTIVITY.NOT_DESTROYED
 import java.io.File
 
 class LegacyHprofTest {
@@ -11,8 +15,8 @@ class LegacyHprofTest {
     assertThat(analysis.applicationLeaks).hasSize(2)
     val leak1 = analysis.applicationLeaks[0]
     val leak2 = analysis.applicationLeaks[1]
-    assertThat(leak1.className).isEqualTo("com.example.leakcanary.MainActivity")
-    assertThat(leak2.className).isEqualTo("android.graphics.Bitmap")
+    assertThat(leak1.className).isEqualTo("android.graphics.Bitmap")
+    assertThat(leak2.className).isEqualTo("com.example.leakcanary.MainActivity")
   }
 
   @Test fun androidM() {
@@ -21,20 +25,30 @@ class LegacyHprofTest {
     assertThat(analysis.applicationLeaks).hasSize(1)
     val leak = analysis.applicationLeaks[0]
     assertThat(leak.className).isEqualTo("com.example.leakcanary.MainActivity")
-    assertThat(leak.leakTrace.elements[0].labels).contains("Thread name: 'AsyncTask #1'")
+    assertThat(leak.leakTrace.elements[0].labels).contains("GC Root: System class")
   }
 
   @Test fun androidMStripped() {
     val stripper = HprofPrimitiveArrayStripper()
-    val strippedHprof =
-      stripper.stripPrimitiveArrays(fileFromResources("leak_asynctask_m.hprof"))
+    val sourceHprof = fileFromResources("leak_asynctask_m.hprof")
+    val strippedHprof = stripper.stripPrimitiveArrays(sourceHprof)
 
-    val analysis = analyzeHprof(strippedHprof)
+    assertThat(readThreadNames(sourceHprof)).contains("AsyncTask #1")
+    assertThat(readThreadNames(strippedHprof)).allMatch { threadName ->
+      threadName.all { character -> character == '?' }
+    }
+  }
 
-    assertThat(analysis.applicationLeaks).hasSize(1)
-    val leak = analysis.applicationLeaks[0]
-    assertThat(leak.className).isEqualTo("com.example.leakcanary.MainActivity")
-    assertThat(leak.leakTrace.elements[0].labels).contains("Thread name: ''")
+  private fun readThreadNames(hprofFile: File): List<String> {
+    val threadNames = Hprof.open(hprofFile)
+        .use { hprof ->
+          val graph = HprofHeapGraph.indexHprof(hprof)
+          graph.findClassByName("java.lang.Thread")!!.instances.map { instance ->
+            instance["java.lang.Thread", "name"]!!.value.readAsJavaString()!!
+          }
+              .toList()
+        }
+    return threadNames
   }
 
   @Test fun androidO() {
@@ -43,6 +57,39 @@ class LegacyHprofTest {
     assertThat(analysis.applicationLeaks).hasSize(1)
     val leak = analysis.applicationLeaks[0]
     assertThat(leak.className).isEqualTo("com.example.leakcanary.MainActivity")
+  }
+
+  private enum class WRAPS_ACTIVITY {
+    DESTROYED,
+    NOT_DESTROYED,
+    NOT_ACTIVITY
+  }
+
+  @Test fun androidOCountActivityWrappingContexts() {
+    val contextWrapperStatuses = Hprof.open(fileFromResources("leak_asynctask_o.hprof"))
+        .use { hprof ->
+          val graph = HprofHeapGraph.indexHprof(hprof)
+          graph.instances.filter { it instanceOf "android.content.ContextWrapper" && !(it instanceOf "android.app.Activity") }
+              .map { instance ->
+                val reporter = ObjectReporter(instance)
+                AndroidObjectInspectors.CONTEXT_WRAPPER.inspect(reporter)
+                if (reporter.leakingReasons.size == 1) {
+                  DESTROYED
+                } else if (reporter.labels.size == 1) {
+                  if ("Activity.mDestroyed false" in reporter.labels.first()) {
+                    NOT_DESTROYED
+                  } else {
+                    NOT_ACTIVITY
+                  }
+                } else throw IllegalStateException(
+                    "Unexpected, should have 1 leaking status ${reporter.leakingReasons} or one label ${reporter.labels}"
+                )
+              }
+              .toList()
+        }
+    assertThat(contextWrapperStatuses.filter { it == DESTROYED }).hasSize(12)
+    assertThat(contextWrapperStatuses.filter { it == NOT_DESTROYED }).hasSize(6)
+    assertThat(contextWrapperStatuses.filter { it == NOT_ACTIVITY }).hasSize(1)
   }
 
   @Test fun gcRootInNonPrimaryHeap() {
@@ -66,7 +113,7 @@ class LegacyHprofTest {
 
   private fun analyzeHprof(hprofFile: File): HeapAnalysisSuccess {
     val heapAnalyzer = HeapAnalyzer(OnAnalysisProgressListener.NO_OP)
-    val analysis = heapAnalyzer.checkForLeaks(
+    val analysis = heapAnalyzer.analyze(
         hprofFile, AndroidReferenceMatchers.appDefaults, false, AndroidObjectInspectors.appDefaults
     )
     println(analysis)

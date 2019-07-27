@@ -2,16 +2,16 @@
 
 ## Can a leak be caused by the Android SDK?
 
-Yes. There are a number of known memory leaks that have been fixed over time in AOSP as well as in manufacturer implementations. When such a leak occurs, there is little you can do as an app developer to fix it. For that reason, LeakCanary has a built-in list of known Android leaks to ignore: [AndroidExcludedRefs.kt](https://github.com/square/leakcanary/blob/master/leakcanary-analyzer/src/main/java/leakcanary/AndroidExcludedRefs.kt).
+Yes. There are a number of known memory leaks that have been fixed over time in AOSP as well as in manufacturer implementations. When such a leak occurs, there is little you can do as an app developer to fix it. For that reason, LeakCanary has a built-in list of known Android leaks to ignore: [AndroidReferenceMatchers](/api/shark-android/shark/-android-reference-matchers/).
 
 If you find a new one, please [create an issue](https://github.com/square/leakcanary/issues/new/choose) and follow these steps:
 
 1. Provide the entire leak trace information (reference key, device, etc), and use backticks (`) for formatting.
-2. Read the AOSP source for that version of Android, and try to figure out why it happens. You can easily navigate through SDK versions [android/platform_frameworks_base](https://github.com/android/platform_frameworks_base).
+2. Read the AOSP source for that version of Android, and try to figure out why it happens. You can easily navigate through SDK versions by switching branches on the GitHub mirror: [android/platform_frameworks_base](https://github.com/android/platform_frameworks_base).
 3. Check if it happens on the latest version of Android, and otherwise use blame to find when it was fixed.
 4. If it's still happening, build a simple repro case.
 5. File an issue on [b.android.com](http://b.android.com) with the leak trace and the repro case.
-6. Create a PR in LeakCanary to update `AndroidExcludedRefs.kt`. Optional: if you find a hack to clear that leak on previous versions of Android, feel free to document it.
+6. Create a PR in LeakCanary to update [AndroidReferenceMatchers](/api/shark-android/shark/-android-reference-matchers/). Optional: if you find a hack to clear that leak on previous versions of Android, feel free to document it.
 
 ## How do I share a leak trace?
 
@@ -32,6 +32,10 @@ Here's how you can find the leaking instance in the heap dump:
 4. The `referent` field of that `KeyedWeakReference` is your leaking object.
 5. From then on, the matter is in your hands. A good start is to look at the shortest path to GC Roots (excluding weak references).
 
+## How does LeakCanary get installed by only adding a dependency?
+
+On Android, content providers are created after the Application instance is created but before Application.onCreate() is called. The `leakcanary-object-watcher-android` artifact has a non exported ContentProvider defined in its `AndroidManifest.xml` file. When that ContentProvider is installed, it adds activity and fragment lifecycle listeners to the application.
+
 ## How many methods does LeakCanary add?
 
 **0**. LeakCanary is a debug only library.
@@ -42,7 +46,7 @@ Update your dependencies to the latest SNAPSHOT (see [build.gradle](https://gith
 
 ```gradle
  dependencies {
-   debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.0-alpha-4-SNAPSHOT'
+   debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.0-beta-2-SNAPSHOT'
  }
 ```
 
