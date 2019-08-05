@@ -216,11 +216,11 @@ LeakCanary is released as several libraries:
 * ObjectWatcher
     * Used to watch retained objects and check if they become weakly reachable.
     * Suitable for release builds.
-    * Artifact id: `com.squareup.leakcanary:object-watcher`.
+    * Artifact id: `com.squareup.leakcanary:leakcanary-object-watcher`.
 * ObjectWatcher Android
     * Automatically detects retained destroyed activities and fragments.
     * Suitable for release builds.
-    * Artifact id: `com.squareup.leakcanary:object-watcher-android`.
+    * Artifact id: `com.squareup.leakcanary:leakcanary-object-watcher-android`.
 * LeakCanary
     * Dumps the heap and analyzes it.
     * Currently only suitable for debug builds.
