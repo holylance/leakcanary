@@ -57,6 +57,7 @@ import java.util.LinkedHashMap
  * identified as "to visit last" and then visiting them as needed if no path is
  * found.
  */
+@Suppress("TooManyFunctions")
 internal class PathFinder(
   private val graph: HeapGraph,
   private val listener: OnAnalysisProgressListener,
@@ -233,6 +234,7 @@ internal class PathFinder(
   private fun State.enqueueGcRoots() {
     val gcRoots = sortedGcRoots()
 
+    val threadNames = mutableMapOf<HeapInstance, String>()
     val threadsBySerialNumber = mutableMapOf<Int, Pair<HeapInstance, ThreadObject>>()
     gcRoots.forEach { (objectRecord, gcRoot) ->
       if (computeRetainedHeapSize) {
@@ -247,7 +249,11 @@ internal class PathFinder(
           val (threadInstance, threadRoot) = threadsBySerialNumber.getValue(
               gcRoot.threadSerialNumber
           )
-          val threadName = threadInstance[Thread::class, "name"]?.value?.readAsJavaString()
+          val threadName = threadNames[threadInstance] ?: {
+            val name = threadInstance[Thread::class, "name"]?.value?.readAsJavaString()?:""
+            threadNames[threadInstance] = name
+            name
+          }()
           val referenceMatcher = threadNameReferenceMatchers[threadName]
 
           if (referenceMatcher !is IgnoredReferenceMatcher) {
@@ -436,6 +442,7 @@ internal class PathFinder(
     }
   }
 
+  @Suppress("ReturnCount")
   private fun State.enqueue(
     node: ReferencePathNode
   ) {
@@ -540,6 +547,7 @@ internal class PathFinder(
     }
   }
 
+  @Suppress("ComplexCondition")
   private fun State.updateDominator(
     parent: Long,
     instance: Long,
