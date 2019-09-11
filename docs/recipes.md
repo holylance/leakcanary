@@ -90,7 +90,11 @@ val retainedInstanceCount = AppWatcher.objectWatcher.retainedObjectCount
 
 ## Running LeakCanary in instrumentation tests
 
-Add the `leakcanary-android-instrumentation` dependency to your instrumentation tests:
+Running leak detection in UI tests means you can detect memory leaks automatically in Continuous Integration prior to those leaks being merged into the codebase. However, as LeakCanary runs with a 5 seconds delay and freezes the VM to take a heap dump, this can introduce flakiness to the UI tests. Therefore LeakCanary automatically disables itself by setting `LeakCanary.config.dumpHeap` to `false` if it detects classes from the `androidx.test` dependency in the runtime classpath. If you run UI tests without `androidx.test`, we strongly advise that you set `dumpHeap` to `false`: `LeakCanary.config = LeakCanary.config.copy(dumpHeap = false)`.
+
+LeakCanary provides an artifact dedicated to detecting leaks in UI tests which provides a run listener that waits for the end of a test, and if the test succeeds then it look for retained objects, trigger a heap dump if needed and perform an analysis.
+
+To set it up, add the `leakcanary-android-instrumentation` dependency to your instrumentation tests:
 
 ```
 androidTestImplementation "com.squareup.leakcanary:leakcanary-android-instrumentation:${leakCanaryVersion}"
@@ -176,7 +180,6 @@ class DebugExampleApplication : ExampleApplication() {
 }
 ```
 
-
 ## Matching known library leaks
 
 Set [LeakCanary.Config.referenceMatchers](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/reference-matchers/) to a list that builds on top of [AndroidReferenceMatchers.appDefaults](/leakcanary/api/shark-android/shark/-android-reference-matchers/app-defaults/):
@@ -200,6 +203,13 @@ class DebugExampleApplication : ExampleApplication() {
   }
 }
 ```
+
+## Ignoring specific activities or fragment classes
+
+Sometimes a 3rd party library provides its own activities or fragments which contain a number of bugs leading to leaks of those specific 3rd party activities and fragments. You should push hard on that library to fix their memory leaks as it's directly impacting your application. That being said, until those are fixed, you have two options:
+
+1. Add the specific leaks as known library leaks (see [Matching known library leaks](#matching-known-library-leaks)). LeakCanary will run when those leaks are detected and then report them as known library leaks.
+2. Disable LeakCanary automatic activity or fragment watching (e.g. `AppWatcher.config = AppWatcher.config.copy(watchActivities = false)`) and then manually pass objects to `AppWatcher.objectWatcher.watch`.
 
 ## Identifying leaking objects and labeling objects
 
