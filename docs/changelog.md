@@ -1,5 +1,35 @@
 # Change Log
 
+## Next release
+
+* Improved string rendering for heap analysis results
+* Support for pattern matching of native reference leaks [#1562](https://github.com/square/leakcanary/issues/1562)
+* Added support for deobfuscation using Proguard mapping files in Shark [#1499](https://github.com/square/leakcanary/issues/1499). This isn't directly supported in LeakCanary yet.
+* Added support for extracting metadata from the heap dump (see the[recipe](recipes.md#extracting-metadata-from-the-heap-dump)) [#1519](https://github.com/square/leakcanary/issues/1519)
+* Improved auto disabling of LeakCanary in Unit and UI tests [#1552](https://github.com/square/leakcanary/issues/1552)
+* Several performance improvements when parsing heap dumps
+* Fixed several bugs and crashes
+* Added new known leak patterns
+
+Many thanks to
+[@Armaxis](https://github.com/Armaxis),
+[@BraisGabin](https://github.com/BraisGabin),
+[@bric3](https://github.com/bric3),
+[@elihart](https://github.com/elihart),
+[@fernandospr](https://github.com/fernandospr),
+[@gabrysgab](https://github.com/gabrysgab),
+[@JorgeDLS](https://github.com/JorgeDLS),
+[@lannyf77](https://github.com/lannyf77),
+[@msfjarvis](https://github.com/msfjarvis),
+[@mzgreen](https://github.com/mzgreen),
+[@ozmium](https://github.com/ozmium),
+[@PaulWoitaschek](https://github.com/pyricau),
+[@pyricau](https://github.com/pyricau),
+[@shelpy](https://github.com/shelpy),
+[@vRallev](https://github.com/vRallev),
+[@ZacSweers](https://github.com/ZacSweers)
+for the contributions, bug reports and feature requests.
+
 ## Version 2.0 Beta 3 (2019-08-22)
 
 LeakCanary 2 is in **beta**: the internals and APIs are mostly stable.

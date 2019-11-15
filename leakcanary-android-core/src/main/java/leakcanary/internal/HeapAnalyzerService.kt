@@ -37,10 +37,11 @@ internal class HeapAnalyzerService : ForegroundService(
 ), OnAnalysisProgressListener {
 
   override fun onHandleIntentInForeground(intent: Intent?) {
-    if (intent == null) {
-      SharkLog.d { "HeapAnalyzerService received a null intent, ignoring." }
+    if (intent == null || !intent.hasExtra(HEAPDUMP_FILE_EXTRA)) {
+      SharkLog.d { "HeapAnalyzerService received a null or empty intent, ignoring." }
       return
     }
+
     // Since we're running in the main process we should be careful not to impact it.
     Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
     val heapDumpFile = intent.getSerializableExtra(HEAPDUMP_FILE_EXTRA) as File
@@ -59,10 +60,14 @@ internal class HeapAnalyzerService : ForegroundService(
 
     val heapAnalysis =
       heapAnalyzer.analyze(
-          heapDumpFile, config.referenceMatchers, config.computeRetainedHeapSize, config.objectInspectors,
+          heapDumpFile,
+          config.referenceMatchers,
+          config.computeRetainedHeapSize,
+          config.objectInspectors,
           if (config.useExperimentalLeakFinders) config.objectInspectors else listOf(
               ObjectInspectors.KEYED_WEAK_REFERENCE
-          )
+          ),
+          config.metatadaExtractor
       )
 
     config.onHeapAnalyzedListener.onHeapAnalyzed(heapAnalysis)
@@ -89,7 +94,7 @@ internal class HeapAnalyzerService : ForegroundService(
       startForegroundService(context, intent)
     }
 
-    fun startForegroundService(
+    private fun startForegroundService(
       context: Context,
       intent: Intent
     ) {

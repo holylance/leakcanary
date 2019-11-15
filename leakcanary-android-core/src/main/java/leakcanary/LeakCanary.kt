@@ -3,10 +3,13 @@ package leakcanary
 import android.content.Intent
 import leakcanary.LeakCanary.config
 import leakcanary.internal.InternalLeakCanary
+import shark.AndroidMetadataExtractor
 import shark.AndroidObjectInspectors
 import shark.AndroidReferenceMatchers
+import shark.HeapAnalysisSuccess
 import shark.IgnoredReferenceMatcher
 import shark.LibraryLeakReferenceMatcher
+import shark.MetadataExtractor
 import shark.ObjectInspector
 import shark.ReferenceMatcher
 import shark.SharkLog
@@ -93,6 +96,14 @@ object LeakCanary {
     val onHeapAnalyzedListener: OnHeapAnalyzedListener = DefaultOnHeapAnalyzedListener.create(),
 
     /**
+     * Extracts metadata from a hprof to be reported in [HeapAnalysisSuccess.metadata].
+     * Called on a background thread during heap analysis.
+     *
+     * Defaults to [AndroidMetadataExtractor]
+     */
+    val metatadaExtractor: MetadataExtractor = AndroidMetadataExtractor,
+
+    /**
      * Whether to compute the retained heap size, which is the total number of bytes in memory that
      * would be reclaimed if the detected leaks didn't happen. This includes native memory
      * associated to Java objects (e.g. Android bitmaps).
@@ -146,9 +157,24 @@ object LeakCanary {
    */
   @Volatile
   var config: Config = if (AppWatcher.isInstalled) Config() else InternalLeakCanary.noInstallConfig
-    set(value) {
-      field = value
-      SharkLog.d { "Updated LeakCanary.config to $value" }
+    set(newConfig) {
+      val previousConfig = field
+      field = newConfig
+      SharkLog.d {
+        val changedFields = mutableListOf<String>()
+        Config::class.java.declaredFields.forEach { field ->
+          field.isAccessible = true
+          val previousValue = field[previousConfig]
+          val newValue = field[newConfig]
+          if (previousValue != newValue) {
+            changedFields += "${field.name}=$newValue"
+          }
+        }
+
+        "Updated LeakCanary.config: Config(${if (changedFields.isNotEmpty()) changedFields.joinToString(
+            ", "
+        ) else "no changes"})"
+      }
     }
 
   /**
