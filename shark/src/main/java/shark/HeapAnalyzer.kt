@@ -44,7 +44,6 @@ import shark.OnAnalysisProgressListener.Step.COMPUTING_RETAINED_SIZE
 import shark.OnAnalysisProgressListener.Step.EXTRACTING_METADATA
 import shark.OnAnalysisProgressListener.Step.FINDING_RETAINED_OBJECTS
 import shark.OnAnalysisProgressListener.Step.PARSING_HEAP_DUMP
-import shark.OnAnalysisProgressListener.Step.REPORTING_HEAP_ANALYSIS
 import shark.internal.PathFinder
 import shark.internal.PathFinder.PathFindingResults
 import shark.internal.ReferencePathNode
@@ -67,7 +66,6 @@ class HeapAnalyzer constructor(
 
   private class FindLeakInput(
     val graph: HeapGraph,
-    val leakFinders: List<ObjectInspector>,
     val referenceMatchers: List<ReferenceMatcher>,
     val computeRetainedHeapSize: Boolean,
     val objectInspectors: List<ObjectInspector>
@@ -79,10 +77,10 @@ class HeapAnalyzer constructor(
    */
   fun analyze(
     heapDumpFile: File,
+    leakingObjectFinder: LeakingObjectFinder,
     referenceMatchers: List<ReferenceMatcher> = emptyList(),
     computeRetainedHeapSize: Boolean = false,
     objectInspectors: List<ObjectInspector> = emptyList(),
-    leakFinders: List<ObjectInspector> = objectInspectors,
     metadataExtractor: MetadataExtractor = MetadataExtractor.NO_OP,
     proguardMapping: ProguardMapping? = null
   ): HeapAnalysis {
@@ -90,7 +88,6 @@ class HeapAnalyzer constructor(
 
     if (!heapDumpFile.exists()) {
       val exception = IllegalArgumentException("File does not exist: $heapDumpFile")
-      listener.onAnalysisProgress(REPORTING_HEAP_ANALYSIS)
       return HeapAnalysisFailure(
           heapDumpFile, System.currentTimeMillis(), since(analysisStartNanoTime),
           HeapAnalysisException(exception)
@@ -106,18 +103,20 @@ class HeapAnalyzer constructor(
             listener.onAnalysisProgress(EXTRACTING_METADATA)
             val metadata = metadataExtractor.extractMetadata(graph)
 
-            val findLeakInput = FindLeakInput(
-                graph, leakFinders, referenceMatchers, computeRetainedHeapSize, objectInspectors
-            )
-            val (applicationLeaks, libraryLeaks) = findLeakInput.findLeaks()
-            listener.onAnalysisProgress(REPORTING_HEAP_ANALYSIS)
+            listener.onAnalysisProgress(FINDING_RETAINED_OBJECTS)
+            val leakingObjectIds = leakingObjectFinder.findLeakingObjectIds(graph)
+
+            val helpers =
+              FindLeakInput(graph, referenceMatchers, computeRetainedHeapSize, objectInspectors)
+
+            val (applicationLeaks, libraryLeaks) = helpers.findLeaks(leakingObjectIds)
+
             return HeapAnalysisSuccess(
                 heapDumpFile, System.currentTimeMillis(), since(analysisStartNanoTime), metadata,
                 applicationLeaks, libraryLeaks
             )
           }
     } catch (exception: Throwable) {
-      listener.onAnalysisProgress(REPORTING_HEAP_ANALYSIS)
       return HeapAnalysisFailure(
           heapDumpFile, System.currentTimeMillis(), since(analysisStartNanoTime),
           HeapAnalysisException(exception)
@@ -125,33 +124,17 @@ class HeapAnalyzer constructor(
     }
   }
 
-  private fun FindLeakInput.findLeaks(): Pair<List<ApplicationLeak>, List<LibraryLeak>> {
-    val leakingInstanceObjectIds = findRetainedObjects()
-
+  private fun FindLeakInput.findLeaks(leakingObjectIds: Set<Long>): Pair<List<ApplicationLeak>, List<LibraryLeak>> {
     val pathFinder = PathFinder(graph, listener, referenceMatchers)
     val pathFindingResults =
-      pathFinder.findPathsFromGcRoots(leakingInstanceObjectIds, computeRetainedHeapSize)
+      pathFinder.findPathsFromGcRoots(leakingObjectIds, computeRetainedHeapSize)
 
     SharkLog.d {
-      "Found ${leakingInstanceObjectIds.size} retained objects" +
+      "Found ${leakingObjectIds.size} retained objects" +
           " and ${pathFindingResults.pathsToLeakingObjects.size} paths."
     }
 
     return buildLeakTraces(pathFindingResults)
-  }
-
-  private fun FindLeakInput.findRetainedObjects(): Set<Long> {
-    listener.onAnalysisProgress(FINDING_RETAINED_OBJECTS)
-    return graph.objects
-        .filter { objectRecord ->
-          val reporter = ObjectReporter(objectRecord)
-          leakFinders.any { inspector ->
-            inspector.inspect(reporter)
-            reporter.leakingReasons.isNotEmpty()
-          }
-        }
-        .map { it.objectId }
-        .toSet()
   }
 
   internal sealed class TrieNode {
@@ -493,7 +476,7 @@ class HeapAnalyzer constructor(
       reason = reporter.notLeakingReasons.joinToString(" and ")
     }
 
-    val leakingReasons = reporter.leakingReasons + reporter.likelyLeakingReasons
+    val leakingReasons = reporter.leakingReasons
     if (leakingReasons.isNotEmpty()) {
       // NOT_LEAKING wins over LEAKING
       if (status == NOT_LEAKING) {

@@ -21,6 +21,7 @@ internal object LeakTable {
         group_description TEXT,
         class_simple_name TEXT,
         is_library_leak INTEGER,
+        is_read INTEGER,
         object BLOB
         )"""
 
@@ -43,8 +44,9 @@ internal object LeakTable {
     values.put("group_hash", leak.groupHash)
     values.put("group_description", leak.createGroupDescription())
     values.put("class_simple_name", leak.classSimpleName)
-    values.put("object", leak.toByteArray())
     values.put("is_library_leak", if (leak is LibraryLeak) 1 else 0)
+    values.put("is_read", 0)
+    values.put("object", leak.toByteArray())
     return db.insertOrThrow("leak", null, values)
   }
 
@@ -61,13 +63,6 @@ internal object LeakTable {
     db: SQLiteDatabase,
     heapAnalysisId: Long
   ): Map<String, HeapAnalysisGroupProjection> {
-
-    val isLatestHeapAnalysis = db.rawQuery("SELECT MAX(id) FROM heap_analysis", null)
-        .use { cursor ->
-          cursor.moveToNext()
-          cursor.getLong(0) == heapAnalysisId
-        }
-
     return db.rawQuery(
         """
           SELECT
@@ -75,8 +70,8 @@ internal object LeakTable {
           , group_description
           , MAX(created_at_time_millis) as created_at_time_millis
           , SUM(CASE WHEN heap_analysis_id=$heapAnalysisId THEN 1 ELSE 0 END) as leak_count
-          , COUNT(*) as total_leak_count
           , MIN(is_library_leak) as is_library_leak
+          , MAX(is_read) as is_read
           FROM leak l
           LEFT JOIN heap_analysis h ON l.heap_analysis_id = h.id
           GROUP BY 1, 2
@@ -91,9 +86,8 @@ internal object LeakTable {
             val description = cursor.getString(1)
             val createdAtTimeMillis = cursor.getLong(2)
             val leakCount = cursor.getInt(3)
-            val totalLeakCount = cursor.getInt(4)
-            val isNew = isLatestHeapAnalysis && leakCount == totalLeakCount
-            val isLibraryLeak = cursor.getInt(5) == 1
+            val isLibraryLeak = cursor.getInt(4) == 1
+            val isNew = cursor.getInt(5) == 0
             val group = HeapAnalysisGroupProjection(
                 hash, description, createdAtTimeMillis, leakCount, isNew, isLibraryLeak
             )
@@ -107,7 +101,9 @@ internal object LeakTable {
     val hash: String,
     val description: String,
     val createdAtTimeMillis: Long,
-    val leakCount: Int
+    val leakCount: Int,
+    val isLibraryLeak: Boolean,
+    val isNew: Boolean
   )
 
   fun retrieveAllLeaks(
@@ -120,6 +116,8 @@ internal object LeakTable {
           , group_description
           , MAX(created_at_time_millis) as created_at_time_millis
           , COUNT(*) as leak_count
+          , MIN(is_library_leak) as is_library_leak
+          , MAX(is_read) as is_read
           FROM leak l
           LEFT JOIN heap_analysis h ON l.heap_analysis_id = h.id
           GROUP BY 1, 2
@@ -133,7 +131,9 @@ internal object LeakTable {
                 hash = cursor.getString(0),
                 description = cursor.getString(1),
                 createdAtTimeMillis = cursor.getLong(2),
-                leakCount = cursor.getInt(3)
+                leakCount = cursor.getInt(3),
+                isLibraryLeak = cursor.getInt(4) == 1,
+                isNew = cursor.getInt(5) == 0
             )
             all.add(group)
           }
@@ -146,8 +146,19 @@ internal object LeakTable {
     val analysisId: Long,
     val classSimpleName: String,
     val groupDescription: String,
-    val createdAtTimeMillis: Long
+    val createdAtTimeMillis: Long,
+    val isNew: Boolean,
+    val isLibraryLeak: Boolean
   )
+
+  fun markAsRead(
+    db: SQLiteDatabase,
+    leakId: Long
+  ) {
+    val values = ContentValues()
+    values.put("is_read", 1)
+    db.update("leak", values, "id = ?", arrayOf(leakId.toString()))
+  }
 
   fun retrieveLeaksByHash(
     db: SQLiteDatabase,
@@ -161,6 +172,8 @@ internal object LeakTable {
           , l.class_simple_name
           , l.group_description
           , h.created_at_time_millis
+          , l.is_read
+          , l.is_library_leak
           FROM leak l
           LEFT JOIN heap_analysis h ON l.heap_analysis_id = h.id
           WHERE group_hash = ?
@@ -170,13 +183,14 @@ internal object LeakTable {
         .use { cursor ->
           val leaks = mutableListOf<LeakProjection>()
           while (cursor.moveToNext()) {
-            val id = cursor.getLong(0)
-            val analysisId = cursor.getLong(1)
-            val classSimpleName = cursor.getString(2)
-            val groupDescription = cursor.getString(3)
-            val createdAtTimeMillis = cursor.getLong(4)
             leaks += LeakProjection(
-                id, analysisId, classSimpleName, groupDescription, createdAtTimeMillis
+                id = cursor.getLong(0),
+                analysisId = cursor.getLong(1),
+                classSimpleName = cursor.getString(2),
+                groupDescription = cursor.getString(3),
+                createdAtTimeMillis = cursor.getLong(4),
+                isNew = cursor.getInt(5) == 0,
+                isLibraryLeak = cursor.getInt(6) == 1
             )
           }
           return leaks
@@ -186,7 +200,8 @@ internal object LeakTable {
   class LeakDetails(
     val leak: Leak,
     val analysisId: Long,
-    val analysis: HeapAnalysisSuccess
+    val analysis: HeapAnalysisSuccess,
+    val isNew: Boolean
   )
 
   fun retrieveLeakById(
@@ -199,6 +214,7 @@ internal object LeakTable {
           l.heap_analysis_id
           , l.object
           , h.object
+          , l.is_read
           FROM leak l
           LEFT JOIN heap_analysis h ON l.heap_analysis_id = h.id
           WHERE l.id = ?
@@ -210,8 +226,9 @@ internal object LeakTable {
             val heapAnalysisId = cursor.getLong(0)
             val leakingInstance = Serializables.fromByteArray<Leak>(cursor.getBlob(1))
             val analysis = Serializables.fromByteArray<HeapAnalysisSuccess>(cursor.getBlob(2))
+            val isNew = cursor.getInt(3) == 0
             if (leakingInstance != null && analysis != null) {
-              LeakDetails(leakingInstance, heapAnalysisId, analysis)
+              LeakDetails(leakingInstance, heapAnalysisId, analysis, isNew)
             } else null
           } else null
         }
@@ -228,9 +245,9 @@ internal object LeakTable {
     db.delete("leak", null, null)
   }
 
-  internal fun Leak.createGroupDescription(): String {
+  private fun Leak.createGroupDescription(): String {
     return if (this is LibraryLeak) {
-      "Library Leak: $pattern"
+      pattern.toString()
     } else {
       val leakCauses = leakTrace.leakCauses
       if (leakCauses.isEmpty()) {
