@@ -42,7 +42,7 @@ To customize the detection of retained objects at runtime, update [AppWatcher.co
 AppWatcher.config = AppWatcher.config.copy(watchFragmentViews = false)
 ```
 
-In Java, you can use [AppWatcher.Config.Builder](/leakcanary/api/leakcanary-object-watcher-android/leakcanary/appwatcherconfig/-app-watcher/config/builder/) instead:
+In Java, you can use [AppWatcher.Config.Builder](/leakcanary/api/leakcanary-object-watcher-android/leakcanary/-app-watcher/-config/-builder/) instead:
 ```
 AppWatcher.Config config = AppWatcher.getConfig().newBuilder()
    .watchFragmentViews(false)
@@ -56,7 +56,7 @@ To customize the heap dumping & analysis, update [LeakCanary.config](/leakcanary
 LeakCanary.config = LeakCanary.config.copy(retainedVisibleThreshold = 3)
 ```
 
-In Java, you can use [LeakCanary.Config.Builder](/leakcanary/api/leakcanary-android-core/leakcanary/config/-leak-canary/config/builder/) instead:
+In Java, you can use [LeakCanary.Config.Builder](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/-builder/) instead:
 ```
 LeakCanary.Config config = LeakCanary.getConfig().newBuilder()
    .retainedVisibleThreshold(3)
@@ -135,6 +135,18 @@ Run the instrumentation tests:
 ```
 
 You can extend `FailTestOnLeakRunListener` to customize the behavior.
+
+## Android TV
+
+LeakCanary works on Android TV devices (FireTV, Nexus player, Nvidia Shield, MiBox, etc.) without any additional setup. However, there are couple things you need to be aware of:
+
+-   Android TV doesn't have notifications. LeakCanary will display Toast messages when objects become retained and when leak analysis completes. You can also check Logcat for more details.
+-   Due to lack of notifications, the only way to **manually** trigger a heap dump is to background the app.  
+-   There's a [bug on API 26+ devices](https://issuetracker.google.com/issues/141429184) that prevents the activity that displays leaks from appearing in apps list. As a workaround, LeakCanary prints an `adb shell` command in Logcat after heap dump analysis that launches leak list activity:
+    ```
+    adb shell am start -n "com.your.package.name/leakcanary.internal.activity.LeakLauncherActivity"
+    ``` 
+-   Some Android TV devices have very little memory available per app process and this might impact LeakCanary. [Running the LeakCanary analysis in a separate process](#running-the-leakcanary-analysis-in-a-separate-process) might help in such cases.
 
 ## Icon and label
 
@@ -457,7 +469,7 @@ dependencies {
 
 ## Extracting metadata from the heap dump
 
-[LeakCanary.Config.metatadaExtractor](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/metatada-extractor/) extracts metadata from a heap dump. The metadata is then available in `HeapAnalysisSuccess.metadata`. `LeakCanary.Config.metatadaExtractor` defaults to `AndroidMetadataExtractor` but you can replace it to extract additional metadata from the hprof.
+[LeakCanary.Config.metadataExtractor](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/metadata-extractor/) extracts metadata from a heap dump. The metadata is then available in `HeapAnalysisSuccess.metadata`. `LeakCanary.Config.metadataExtractor` defaults to `AndroidMetadataExtractor` but you can replace it to extract additional metadata from the hprof.
 
 For example, if you want to include the app version name in your heap analysis reports, you need to first store it in memory (e.g. in a static field) and then you can retrieve it in `MetadataExtractor`.
 
@@ -476,7 +488,7 @@ class DebugExampleApplication : ExampleApplication() {
     savedVersionName = packageInfo.versionName
 
     LeakCanary.config = LeakCanary.config.copy(
-        metatadaExtractor = MetadataExtractor { graph ->
+        metadataExtractor = MetadataExtractor { graph ->
           val companionClass =
             graph.findClassByName("com.example.DebugExampleApplication")!!
 
