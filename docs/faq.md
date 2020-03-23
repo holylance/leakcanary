@@ -2,9 +2,9 @@
 
 ## Can a leak be caused by the Android SDK?
 
-Yes. There are a number of known memory leaks that have been fixed over time in AOSP as well as in manufacturer implementations. When such a leak occurs, there is little you can do as an app developer to fix it. For that reason, LeakCanary has a built-in list of known Android leaks to recognize: [AndroidReferenceMatchers](/leakcanary/api/shark-android/shark/-android-reference-matchers/).
+Yes. There are a number of known memory leaks that have been fixed over time in AOSP as well as in manufacturer implementations. When such a leak occurs, there is little you can do as an app developer to fix it. For that reason, LeakCanary has a built-in list of known Android leaks to recognize, called [Library Leaks](fundamentals-how-leakcanary-works.md#library-leaks).
 
-If you find a new one, please [create an issue](https://github.com/square/leakcanary/issues/new/choose) and follow these steps:
+If you find a new one, please [create an issue](https://github.com/square/leakcanary/issues/new/choose) (choose **🤖Leak in Android SDK / support library**) and follow these steps:
 
 1. Provide the entire leak trace information (including metadata), and use backticks (`) for formatting.
 2. Read the AOSP source for that version of Android, and try to figure out why it happens. You can easily navigate through SDK versions by switching branches on the GitHub mirror: [android/platform_frameworks_base](https://github.com/android/platform_frameworks_base).
@@ -34,6 +34,11 @@ D/LeakCanary: Installing AppWatcher
 D/LeakCanary: JUnit detected in classpath, app is running tests => disabling heap dumping & analysis
 D/LeakCanary: Updated LeakCanary.config: Config(dumpHeap=false)
 ```
+
+## Where does LeakCanary store heap dumps?
+
+The default behavior is to store heap dumps in a `leakcanary` folder under the app directory. If the app has been granted the `android.permission.WRITE_EXTERNAL_STORAGE` permission, then heap dumps will be stored
+in a `leakcanary-com.example` folder (where `com.example` is your app package name) under the `Download` folder of the external storage. If the app has not been granted the `android.permission.WRITE_EXTERNAL_STORAGE` permission but that permission is listed in `AndroidManifest.xml` then LeakCanary will show a notification that can be tapped to grant permission.
 
 ## How can I dig beyond the leak trace?
 
