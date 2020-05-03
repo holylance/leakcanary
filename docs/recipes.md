@@ -1,5 +1,7 @@
 # Code Recipes
 
+This page contains code recipes to customize LeakCanary to your needs. Read through the section titles and cook your own meal! Also don't forget to check out the [FAQ](faq.md).
+
 !!! bug
     If you think a recipe might be missing or you're not sure that what you're trying to achieve is possible with the current APIs, please [file an issue](https://github.com/square/leakcanary/issues/new/choose). Your feedback help us make LeakCanary better for the entire community.
 
@@ -23,7 +25,7 @@ class MyService : Service {
 
 ## Configuration
 
-LeakCanary has a default configuration that should work well for most apps. You can also customize it to your needs. The LeakCanary configuration is held by two singleton objects (`AppWatcher` and `LeakCanary`) and can be updated at any time. Most developers configure LeakCanary in their **debug** [Application](https://developer.android.com/reference/android/app/Application) class:
+LeakCanary has a default configuration that works well for most apps. You can also customize it to your needs. The LeakCanary configuration is held by two singleton objects (`AppWatcher` and `LeakCanary`) and can be updated at any time. Most developers configure LeakCanary in their **debug** [Application](https://developer.android.com/reference/android/app/Application) class:
 
 ```kotlin
 class DebugExampleApplication : ExampleApplication() {
@@ -36,7 +38,7 @@ class DebugExampleApplication : ExampleApplication() {
 ```
 
 !!! info
-    You can create a debug application class in your `src/debug/java` folder. Don't forget to also register it in `src/debug/AndroidManifest.xml`.
+    Create a debug application class in your `src/debug/java` folder. Don't forget to also register it in `src/debug/AndroidManifest.xml`.
 
 To customize the detection of retained objects at runtime, update [AppWatcher.config](/leakcanary/api/leakcanary-object-watcher-android/leakcanary/-app-watcher/config/):
 
@@ -44,7 +46,7 @@ To customize the detection of retained objects at runtime, update [AppWatcher.co
 AppWatcher.config = AppWatcher.config.copy(watchFragmentViews = false)
 ```
 
-In Java, you can use [AppWatcher.Config.Builder](/leakcanary/api/leakcanary-object-watcher-android/leakcanary/-app-watcher/-config/-builder/) instead:
+In Java, use [AppWatcher.Config.Builder](/leakcanary/api/leakcanary-object-watcher-android/leakcanary/-app-watcher/-config/-builder/) instead:
 ```
 AppWatcher.Config config = AppWatcher.getConfig().newBuilder()
    .watchFragmentViews(false)
@@ -58,7 +60,7 @@ To customize the heap dumping & analysis, update [LeakCanary.config](/leakcanary
 LeakCanary.config = LeakCanary.config.copy(retainedVisibleThreshold = 3)
 ```
 
-In Java, you can use [LeakCanary.Config.Builder](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/-builder/) instead:
+In Java, use [LeakCanary.Config.Builder](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/-builder/) instead:
 ```
 LeakCanary.Config config = LeakCanary.getConfig().newBuilder()
    .retainedVisibleThreshold(3)
@@ -66,7 +68,7 @@ LeakCanary.Config config = LeakCanary.getConfig().newBuilder()
 LeakCanary.setConfig(config);
 ```
 
-The LeakCanary UI can be configured by overriding the following resources:
+Configure the LeakCanary UI by overriding the following resources:
 
 * `mipmap/leak_canary_icon` see [Icon and label](#icon-and-label)
 * `string/leak_canary_display_activity_label` see [Icon and label](#icon-and-label)
@@ -88,9 +90,9 @@ Sometimes it's necessary to disable LeakCanary temporarily, for example for a pr
 
 	If instead you set `LeakCanary.Config.dumpHeap` to false, `AppWatcher.objectWatcher` will still keep track of retained objects, and LeakCanary will look for these objects when you change `LeakCanary.Config.dumpHeap` back to true.
 
-## Counting retained instances in production
+## Counting retained instances in release builds
 
-The `com.squareup.leakcanary:leakcanary-android` dependency should only be used in debug builds. It depends on `com.squareup.leakcanary:leakcanary-object-watcher-android` which you can use in production to track and count retained instances.
+The `com.squareup.leakcanary:leakcanary-android` dependency should only be used in debug builds. It depends on `com.squareup.leakcanary:leakcanary-object-watcher-android` which you can use in release builds to track and count retained instances.
 
 In your `build.gradle`:
 
@@ -103,6 +105,17 @@ dependencies {
 In your leak reporting code:
 ```kotlin
 val retainedInstanceCount = AppWatcher.objectWatcher.retainedObjectCount
+```
+
+## LeakCanary in release builds
+
+We **do not recommend** including LeakCanary in release builds, as it could negatively impact the experience of your customers. To avoid accidentally including the `com.squareup.leakcanary:leakcanary-android` dependency in a release build, LeakCanary crashes during initialization if the APK is not debuggable. You may have a good reason to create a non debuggable build that includes LeakCanary, for example for a QA build. If necessary, the crashing check can be disabled by overriding the `bool/leak_canary_allow_in_non_debuggable_build` resource, e.g. by creating a file under `res/values` with the following contents:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <bool name="leak_canary_allow_in_non_debuggable_build">true</bool>
+</resources>
 ```
 
 ## Running LeakCanary in instrumentation tests
@@ -181,9 +194,9 @@ res/
 </resources>
 ```
 
-## Uploading to a server
+## Customizing the handling of analysis results
 
-You can change the default behavior to upload the analysis result to a server of your choosing.
+You can change the default behavior of what to do when LeakCanary is done analyzing a heap dump, for example to upload the analysis result to a server of your choosing.
 
 Create a custom [OnHeapAnalyzedListener](/leakcanary/api/leakcanary-android-core/leakcanary/-on-heap-analyzed-listener/) that delegates to [DefaultOnHeapAnalyzedListener](/leakcanary/api/leakcanary-android-core/leakcanary/-default-on-heap-analyzed-listener/): 
 
@@ -200,6 +213,9 @@ class LeakUploader : OnHeapAnalyzedListener {
   }
 }
 ```
+
+!!! info
+    `HeapAnalysis.toString()` returns a large string describing the analysis result and metadata. This string is formatted to be printable to Logcat and shareable on sites like StackOverflow.
 
 Set [LeakCanary.config.onHeapAnalyzedListener](/leakcanary/api/leakcanary-android-core/leakcanary/-leak-canary/-config/on-heap-analyzed-listener/):
 
@@ -539,7 +555,7 @@ leakCanary {
 ```
 
 And that's all. Now you can run LeakCanary on an obfuscated app and leak traces will be automatically deobfuscated.
-**Important:** never use this plugin on a variant that you release for production. This plugin copies obfuscation mapping file and puts it inside the .apk, so if you use it on production build then the obfuscation becomes pointless because the code can be easily deobfuscated using mapping file.
+**Important:** never use this plugin on a release variant. This plugin copies obfuscation mapping file and puts it inside the .apk, so if you use it on release build then the obfuscation becomes pointless because the code can be easily deobfuscated using mapping file.
 
 ## Detecting leaks in JVM applications
 
